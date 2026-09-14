@@ -1,5 +1,5 @@
 # 运行阶段
-FROM qicfan/qms-build-base:latest
+FROM --platform=linux/arm64 qicfan/qms-build-base:latest
 # 设置时区
 ENV TZ=Asia/Shanghai
 ENV PATH=/app:$PATH
