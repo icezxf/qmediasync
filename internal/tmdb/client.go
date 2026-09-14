@@ -187,3 +187,27 @@ func (c *Client) request(url string, req *resty.Request) (*resty.Response, error
 	}
 	return response, nil
 }
+
+// TvSeasonExternalIds 季的外部 ID 结构
+type TvSeasonExternalIds struct {
+	Id     int    `json:"id"`
+	ImdbId string `json:"imdb_id"`
+	TvdbId int    `json:"tvdb_id"`
+}
+
+// GetTvSeasonExternalIds 获取某一季的外部 ID（主要是 IMDb ID）
+func (c *Client) GetTvSeasonExternalIds(tvId int, seasonNumber int) (*TvSeasonExternalIds, error) {
+	respResult := TvSeasonExternalIds{}
+	req := c.resty.R().SetMethod("GET").SetResult(&respResult)
+	url := fmt.Sprintf("/tv/%d/season/%d/external_ids", tvId, seasonNumber)
+	resp, err := c.doRequest(url, req, MakeRequestConfig(2, 5, 5))
+	if err != nil {
+		helpers.TMDBLog.Errorf("获取季 external_ids 失败:%+v", err)
+		return nil, err
+	}
+	if !resp.IsSuccess() {
+		helpers.TMDBLog.Errorf("获取季 external_ids 失败:%s", resp.String())
+		return nil, fmt.Errorf("获取季 external_ids 失败:%s", resp.String())
+	}
+	return &respResult, nil
+}
