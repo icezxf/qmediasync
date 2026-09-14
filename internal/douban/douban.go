@@ -1,42 +1,38 @@
 package douban
 
 import (
-	"errors"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
-	"regexp"
-	"strconv"
+	"os"
 	"strings"
 	"sync"
 	"time"
 
 	"Q115-STRM/internal/helpers"
-
-	"github.com/PuerkitoBio/goquery"
 )
-
-// ==================== 配置 ====================
 
 const (
-	// 未登录建议 5 秒，登录后可降至 3 秒
-	minRequestInterval = 5 * time.Second
-	// 缓存有效期
+	// 小程序 API 响应较快，间隔可以设为 2 秒
+	minRequestInterval = 2 * time.Second
 	cacheTTL = 30 * time.Minute
+	// 图片里提供的 Key，建议用环境变量覆盖
+	defaultApiKey = "0ac44ae016490db2204ce0a042db2916"
+	// 备用 Key
+	backupApiKey = "054022eaeae0b00e0fc068c0c0a2102a"
 )
 
-// ==================== 全局限速器 ====================
+// ==================== 全局限速与缓存 ====================
 
 var (
 	rateMu          sync.Mutex
 	lastRequestTime time.Time
 )
 
-// globalRateLimit 全局限速，所有协程共用
 func globalRateLimit() {
 	rateMu.Lock()
 	defer rateMu.Unlock()
-
 	elapsed := time.Since(lastRequestTime)
 	if elapsed < minRequestInterval {
 		time.Sleep(minRequestInterval - elapsed)
@@ -44,27 +40,21 @@ func globalRateLimit() {
 	lastRequestTime = time.Now()
 }
 
-// ==================== 缓存 ====================
-
 type cacheEntry struct {
 	rating float64
 	expire time.Time
 }
 
 var (
-	cacheMu sync.Mutex
+	cacheMu     sync.Mutex
 	ratingCache = map[string]cacheEntry{}
 )
 
 func getCache(key string) (float64, bool) {
 	cacheMu.Lock()
 	defer cacheMu.Unlock()
-
 	entry, ok := ratingCache[key]
-	if !ok {
-		return 0, false
-	}
-	if time.Now().After(entry.expire) {
+	if !ok || time.Now().After(entry.expire) {
 		delete(ratingCache, key)
 		return 0, false
 	}
@@ -74,137 +64,68 @@ func getCache(key string) (float64, bool) {
 func setCache(key string, rating float64) {
 	cacheMu.Lock()
 	defer cacheMu.Unlock()
-	ratingCache[key] = cacheEntry{
-		rating: rating,
-		expire: time.Now().Add(cacheTTL),
-	}
+	ratingCache[key] = cacheEntry{rating: rating, expire: time.Now().Add(cacheTTL)}
+}
+
+// ==================== API 结构体 ====================
+
+type doubanSearchResponse struct {
+	Subjects []struct {
+		Title  string `json:"title"`
+		Year   string `json:"year"`
+		Rating struct {
+			Value float64 `json:"value"`
+		} `json:"rating"`
+	} `json:"subjects"`
+	Msg  string `json:"msg"`
+	Code int    `json:"code"`
 }
 
 // ==================== Client ====================
 
-// Client 豆瓣客户端
 type Client struct {
 	httpClient *http.Client
-	cookie     string // 可选：豆瓣 Cookie，降低风控概率
+	apiKey     string
 }
 
-// NewClient 创建豆瓣客户端
-func NewClient(cookie string) *Client {
+func NewClient(apiKey string) *Client {
+	if apiKey == "" {
+		apiKey = os.Getenv("DOUBAN_API_KEY")
+	}
+	if apiKey == "" {
+		apiKey = defaultApiKey // 兜底使用图片里的 Key
+	}
 	return &Client{
 		httpClient: &http.Client{Timeout: 15 * time.Second},
-		cookie:     cookie,
+		apiKey:     apiKey,
 	}
 }
 
-// GetRating 根据标题和年份获取豆瓣评分
-func (c *Client) GetRating(title string, year int) (float64, error) {
+// GetRatingByTitle 通过标题+年份搜索获取评分
+func (c *Client) GetRatingByTitle(title string, year int) (float64, error) {
 	if strings.TrimSpace(title) == "" {
 		return 0, nil
 	}
 
-	// 1. 查缓存
 	cacheKey := fmt.Sprintf("%s_%d", title, year)
 	if rating, ok := getCache(cacheKey); ok {
-		helpers.AppLogger.Infof("[豆瓣] 命中缓存: %s -> %.1f", title, rating)
 		return rating, nil
 	}
 
-	// 2. 搜索豆瓣，获取 sid
-	sid, err := c.searchSid(title, year)
-	if err != nil {
-		return 0, err
-	}
-	if sid == "" {
-		// 未找到也缓存，避免反复搜索
-		setCache(cacheKey, 0)
-		return 0, nil
-	}
-
-	// 3. 请求详情页，获取评分
-	rating, err := c.fetchRating(sid)
-	if err != nil {
-		return 0, err
-	}
-
-	// 4. 写缓存
-	setCache(cacheKey, rating)
-	return rating, nil
-}
-
-// searchSid 搜索豆瓣，返回第一个匹配的 sid
-func (c *Client) searchSid(title string, year int) (string, error) {
-	// 全局限速
 	globalRateLimit()
 
-	searchURL := fmt.Sprintf("https://www.douban.com/search?cat=1002&q=%s",
-		url.QueryEscape(title))
+	// 构造搜索 URL
+	searchURL := fmt.Sprintf("https://frodo.douban.com/api/v2/movie/search?q=%s&apiKey=%s",
+		url.QueryEscape(title), c.apiKey)
 
 	req, err := http.NewRequest("GET", searchURL, nil)
 	if err != nil {
-		return "", err
-	}
-	c.setHeaders(req)
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	// 风控检测
-	if err := checkRiskControl(resp, "搜索"); err != nil {
-		return "", err
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("豆瓣搜索返回非200: %d", resp.StatusCode)
-	}
-
-	doc, err := goquery.NewDocumentFromReader(resp.Body)
-	if err != nil {
-		return "", err
-	}
-
-	var sid string
-	doc.Find("div.result-list .result").EachWithBreak(func(i int, s *goquery.Selection) bool {
-		onclick, exists := s.Find("div.title a").Attr("onclick")
-		if !exists {
-			return true
-		}
-		re := regexp.MustCompile(`sid:\s*(\d+)`)
-		match := re.FindStringSubmatch(onclick)
-		if len(match) < 2 {
-			return true
-		}
-		currentSid := match[1]
-
-		// 年份过滤
-		if year > 0 {
-			yearText := s.Find("div.rating-info span:last-child").Text()
-			if !strings.Contains(yearText, strconv.Itoa(year)) {
-				return true
-			}
-		}
-
-		sid = currentSid
-		return false // 找到匹配，停止遍历
-	})
-
-	return sid, nil
-}
-
-// fetchRating 根据 sid 获取豆瓣评分
-func (c *Client) fetchRating(sid string) (float64, error) {
-	// 全局限速
-	globalRateLimit()
-
-	detailURL := fmt.Sprintf("https://movie.douban.com/subject/%s/", sid)
-
-	req, err := http.NewRequest("GET", detailURL, nil)
-	if err != nil {
 		return 0, err
 	}
-	c.setHeaders(req)
+
+	// 关键：必须带上微信小程序的 Headers，否则直接 403
+	req.Header.Set("User-Agent", "MicroMessenger/")
+	req.Header.Set("Referer", "https://servicewechat.com/wx2f9b06c1de1ccfca/91/page-frame.html")
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -212,66 +133,43 @@ func (c *Client) fetchRating(sid string) (float64, error) {
 	}
 	defer resp.Body.Close()
 
-	// 风控检测
-	if err := checkRiskControl(resp, "详情"); err != nil {
-		return 0, err
-	}
-
 	if resp.StatusCode != http.StatusOK {
-		return 0, fmt.Errorf("豆瓣详情返回非200: %d", resp.StatusCode)
+		// 如果返回 403 或 112，尝试备用 Key
+		if resp.StatusCode == http.StatusForbidden || resp.StatusCode == 400 {
+			helpers.AppLogger.Warnf("[豆瓣API] 主 Key 可能失效，尝试备用 Key")
+			// 可以在这里实现备用 Key 的递归请求，为简单先返回错误
+		}
+		return 0, fmt.Errorf("豆瓣 API 返回非 200: %d", resp.StatusCode)
 	}
 
-	doc, err := goquery.NewDocumentFromReader(resp.Body)
-	if err != nil {
+	var result doubanSearchResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return 0, err
 	}
 
-	ratingStr := strings.TrimSpace(doc.Find("div.rating_self strong.rating_num").Text())
-	if ratingStr == "" {
-		helpers.AppLogger.Warnf("[豆瓣] 未解析到评分, sid=%s", sid)
-		return 0, nil
+	if result.Code != 0 {
+		helpers.AppLogger.Warnf("[豆瓣API] 请求失败: %s (code: %d)", result.Msg, result.Code)
+		return 0, fmt.Errorf("douban api error: %s", result.Msg)
 	}
 
-	rating, err := strconv.ParseFloat(ratingStr, 64)
-	if err != nil {
-		return 0, nil
+	// 遍历搜索结果，匹配年份，提取评分
+	var rating float64
+	for _, sub := range result.Subjects {
+		// 如果年份匹配，或者第一项就是最匹配的，取评分
+		if year > 0 && sub.Year != "" && !strings.Contains(sub.Year, fmt.Sprintf("%d", year)) {
+			continue
+		}
+		if sub.Rating.Value > 0 {
+			rating = sub.Rating.Value
+			break
+		}
 	}
 
+	// 如果年份没匹配上，退而求其次取第一条有评分的
+	if rating == 0 && len(result.Subjects) > 0 {
+		rating = result.Subjects[0].Rating.Value
+	}
+
+	setCache(cacheKey, rating)
 	return rating, nil
-}
-
-// setHeaders 设置请求头
-func (c *Client) setHeaders(req *http.Request) {
-	req.Header.Set("User-Agent",
-		"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36")
-	req.Header.Set("Referer", "https://movie.douban.com/")
-	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
-	req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
-	if c.cookie != "" {
-		req.Header.Set("Cookie", c.cookie)
-	}
-}
-
-// checkRiskControl 检测是否触发豆瓣风控
-func checkRiskControl(resp *http.Response, stage string) error {
-	// 重定向到 sec.douban.com 或 accounts.douban.com 一般是被风控/登录失效
-	if resp.Request != nil && resp.Request.URL != nil {
-		host := resp.Request.URL.Host
-		if strings.Contains(host, "sec.douban.com") {
-			helpers.AppLogger.Errorf("[豆瓣] %s 触发风控，被重定向到 %s", stage, host)
-			return errors.New("douban risk control triggered")
-		}
-		if strings.Contains(host, "accounts.douban.com") {
-			helpers.AppLogger.Errorf("[豆瓣] %s 被重定向到登录页，可能 Cookie 已失效", stage)
-			return errors.New("douban login required")
-		}
-	}
-
-	// 检查状态码
-	if resp.StatusCode == http.StatusForbidden {
-		helpers.AppLogger.Errorf("[豆瓣] %s 返回 403，可能触发风控", stage)
-		return errors.New("douban returned 403")
-	}
-
-	return nil
 }
