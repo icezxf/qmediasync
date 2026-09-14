@@ -48,6 +48,6 @@ jobs:
           push: true
           tags: ${{ secrets.DOCKER_USERNAME }}/qmediasync:beta
           file: Dockerfile_beta
-          platforms: linux/amd64
+          platforms: linux/arm64
           secrets: |
             GITHUB_TOKEN=${{ secrets.RELEASE_TOKEN }}
