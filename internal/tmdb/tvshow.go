@@ -66,6 +66,7 @@ type TvDetail struct {
 	Tagline             string              `json:"tagline"`              // 标语
 	Type                string              `json:"type"`                 // 类型
 	Homepage            string              `json:"homepage"`             // 首页
+	ImdbID              string              `json:"imdb_id"`   // 👈 新增这一行
 }
 
 type TvKeywords struct {
