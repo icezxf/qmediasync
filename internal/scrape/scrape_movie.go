@@ -267,30 +267,33 @@ func (m *movieScrapeImpl) ScrapeMovieMedia(mediaFile *models.ScrapeMediaFile) er
 
 // enrichWithDoubanRating 用豆瓣评分覆盖 TMDB 评分
 func (m *movieScrapeImpl) enrichWithDoubanRating(mediaFile *models.ScrapeMediaFile) {
-	if mediaFile.Media == nil {
-		return
-	}
-	// 其他类型（从 NFO 读取的）不处理
-	if mediaFile.MediaType == models.MediaTypeOther {
+	if mediaFile.Media == nil || mediaFile.MediaType == models.MediaTypeOther {
 		return
 	}
 
-	doubanClient := douban.NewClient("") // 如果有豆瓣 Cookie，可以填入
 	title := mediaFile.Media.Name
 	year := mediaFile.Media.Year
 
-	rating, err := doubanClient.GetRating(title, year)
+	if title == "" {
+		return
+	}
+
+	// 小程序 API 版本，不需要 Cookie，只要 apikey
+	doubanClient := douban.NewClient("") // 会自动读环境变量 DOUBAN_API_KEY 或使用默认值
+
+	rating, err := doubanClient.GetRatingByTitle(title, year)
 	if err != nil {
 		helpers.AppLogger.Warnf("[豆瓣] 获取评分失败: %v, 电影: %s", err, title)
 		return
 	}
+
 	if rating > 0 {
 		oldRating := mediaFile.Media.VoteAverage
 		mediaFile.Media.VoteAverage = rating
 		mediaFile.Media.Save()
 		helpers.AppLogger.Infof("[豆瓣] 评分已更新: %s (%.1f -> %.1f)", title, oldRating, rating)
 	} else {
-		helpers.AppLogger.Infof("[豆瓣] 未找到评分，保留 TMDB 评分: %s (%.1f)", title, mediaFile.Media.VoteAverage)
+		helpers.AppLogger.Infof("[豆瓣] 未找到评分: %s (%d)", title, year)
 	}
 }
 
@@ -461,34 +464,6 @@ func (m *movieScrapeImpl) GetMovieUploadFiles(mediaFile *models.ScrapeMediaFile)
 			DestPathId: destPathId,
 		})
 	}
-	// nfoName := m.GetMovieRealName(mediaFile, "", "nfo")
-	// nfoPath := filepath.Join(movieSourcePath, nfoName)
-	// if helpers.PathExists(nfoPath) {
-	// 	file := uploadFile{
-	// 		ID:         fmt.Sprintf("%d", mediaFile.ID),
-	// 		FileName:   nfoName,
-	// 		SourcePath: nfoPath,
-	// 		DestPath:   destPath,
-	// 		DestPathId: destPathId,
-	// 	}
-
-	// 	fileList = append(fileList, file)
-	// }
-	// imageList := []string{"poster.jpg", "clearlogo.jpg", "clearart.jpg", "square.jpg", "logo.jpg", "fanart.jpg", "backdrop.jpg", "background.jpg", "4kbackground.jpg", "thumb.jpg", "banner.jpg", "disc.jpg"}
-	// for _, im := range imageList {
-	// 	name := m.GetMovieRealName(mediaFile, im, "image")
-	// 	sPath := filepath.Join(movieSourcePath, name)
-	// 	if helpers.PathExists(sPath) {
-	// 		file := uploadFile{
-	// 			ID:         fmt.Sprintf("%d", mediaFile.ID),
-	// 			FileName:   name,
-	// 			SourcePath: sPath,
-	// 			DestPath:   destPath,
-	// 			DestPathId: destPathId,
-	// 		}
-	// 		fileList = append(fileList, file)
-	// 	}
-	// }
 	return fileList
 }
 
