@@ -15,13 +15,17 @@ import (
 )
 
 const (
+	// 全局请求间隔，建议 2 秒
 	minRequestInterval = 2 * time.Second
-	cacheTTL           = 30 * time.Minute
-	// 你验证过可用的官方 Key
+	// 缓存有效期
+	cacheTTL = 30 * time.Minute
+	// 官方 App API Key（用于电影查询）
 	defaultApiKey = "0ab215a8b1977939201640fa14c66bab"
+	// 第三方聚合 API（用于电视剧查询）
+	tvApiHost = "https://douban-idatabase.kfstorm.com"
 )
 
-// ==================== 全局限速与缓存 ====================
+// ==================== 全局限速 ====================
 
 var (
 	rateMu          sync.Mutex
@@ -37,6 +41,8 @@ func globalRateLimit() {
 	}
 	lastRequestTime = time.Now()
 }
+
+// ==================== 缓存 ====================
 
 type cacheEntry struct {
 	rating float64
@@ -67,13 +73,23 @@ func setCache(key string, rating float64) {
 
 // ==================== API 响应结构 ====================
 
-type doubanApiResponse struct {
+// 官方电影 API 响应
+type doubanMovieApiResponse struct {
 	Rating struct {
-		Average string `json:"average"` // 官方 API 返回的是字符串 "7.7"
+		Average string `json:"average"`
 	} `json:"rating"`
 	Title string `json:"title"`
 	Msg   string `json:"msg"`
 	Code  int    `json:"code"`
+}
+
+// 第三方聚合 API 响应
+type doubanTvApiItem struct {
+	DoubanID    string  `json:"douban_id"`
+	ImdbID      string  `json:"imdb_id"`
+	DoubanTitle string  `json:"douban_title"`
+	Year        int     `json:"year"`
+	Rating      float64 `json:"rating"`
 }
 
 // ==================== Client ====================
@@ -96,13 +112,15 @@ func NewClient(apiKey string) *Client {
 	}
 }
 
-// GetRatingByImdb 通过 IMDb ID 获取豆瓣评分（推荐）
+// ==================== 电影查询（官方 API） ====================
+
+// GetRatingByImdb 通过 IMDb ID 获取电影豆瓣评分
 func (c *Client) GetRatingByImdb(imdbId string) (float64, error) {
 	if strings.TrimSpace(imdbId) == "" {
 		return 0, nil
 	}
 
-	cacheKey := "imdb_" + imdbId
+	cacheKey := "movie_imdb_" + imdbId
 	if rating, ok := getCache(cacheKey); ok {
 		return rating, nil
 	}
@@ -127,16 +145,16 @@ func (c *Client) GetRatingByImdb(imdbId string) (float64, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return 0, fmt.Errorf("豆瓣 API 返回非 200: %d", resp.StatusCode)
+		return 0, fmt.Errorf("豆瓣电影 API 返回非 200: %d", resp.StatusCode)
 	}
 
-	var result doubanApiResponse
+	var result doubanMovieApiResponse
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return 0, err
 	}
 
 	if result.Code != 0 {
-		helpers.AppLogger.Warnf("[豆瓣API] 请求失败: %s (code: %d)", result.Msg, result.Code)
+		helpers.AppLogger.Warnf("[豆瓣API] 电影请求失败: %s (code: %d)", result.Msg, result.Code)
 		return 0, fmt.Errorf("douban api error: %s", result.Msg)
 	}
 
@@ -147,6 +165,59 @@ func (c *Client) GetRatingByImdb(imdbId string) (float64, error) {
 
 	rating, err := strconv.ParseFloat(ratingStr, 64)
 	if err != nil {
+		return 0, nil
+	}
+
+	setCache(cacheKey, rating)
+	return rating, nil
+}
+
+// ==================== 电视剧查询（第三方聚合 API） ====================
+
+// GetTVRatingByImdb 通过 IMDb ID 获取电视剧豆瓣评分
+func (c *Client) GetTVRatingByImdb(imdbId string) (float64, error) {
+	if strings.TrimSpace(imdbId) == "" {
+		return 0, nil
+	}
+
+	cacheKey := "tv_imdb_" + imdbId
+	if rating, ok := getCache(cacheKey); ok {
+		return rating, nil
+	}
+
+	globalRateLimit()
+
+	// 第三方 API，无需 apikey
+	apiURL := fmt.Sprintf("%s/api/item?imdb_id=%s", tvApiHost, imdbId)
+
+	req, err := http.NewRequest("GET", apiURL, nil)
+	if err != nil {
+		return 0, err
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("第三方豆瓣 API 返回非 200: %d", resp.StatusCode)
+	}
+
+	// 第三方 API 返回的是一个数组
+	var results []doubanTvApiItem
+	if err := json.NewDecoder(resp.Body).Decode(&results); err != nil {
+		return 0, err
+	}
+
+	if len(results) == 0 {
+		return 0, nil // 未找到
+	}
+
+	rating := results[0].Rating
+	if rating <= 0 {
 		return 0, nil
 	}
 
