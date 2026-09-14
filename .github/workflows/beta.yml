@@ -12,7 +12,7 @@ jobs:
     steps:
       - name: Get current time
         id: time
-        run: echo "::set-output name=date::$(date +'%Y-%m-%dT%H:%M:%S')"
+        run: echo "date=$(date +'%Y-%m-%dT%H:%M:%S')" >> $GITHUB_OUTPUT
       - uses: actions/checkout@v3
         with:
           fetch-depth: 0
@@ -29,6 +29,8 @@ jobs:
           DEFAULT_TMDB_API_KEY: ${{ secrets.DEFAULT_TMDB_API_KEY }}
           DEFAULT_SC_API_KEY: ${{ secrets.DEFAULT_SC_API_KEY }}
           ENCRYPTION_KEY: ${{ secrets.ENCRYPTION_KEY }}
+          GOOS: linux
+          GOARCH: arm64
         run: |
           go mod tidy
           CGO_ENABLED=0 go build -ldflags="-s -w -X 'main.Version=${APP_VERSION}' -X 'main.PublishDate=${PUBLISH_DATE}' -X main.FANART_API_KEY=${FANART_API_KEY} -X main.DEFAULT_TMDB_ACCESS_TOKEN=${DEFAULT_TMDB_ACCESS_TOKEN} -X main.DEFAULT_TMDB_API_KEY=${DEFAULT_TMDB_API_KEY} -X main.DEFAULT_SC_API_KEY=${DEFAULT_SC_API_KEY} -X main.ENCRYPTION_KEY=${ENCRYPTION_KEY}" -o QMediaSync .
@@ -46,7 +48,7 @@ jobs:
         with:
           context: .
           push: true
-          tags: ${{ secrets.DOCKER_USERNAME }}/qmediasync:latest
+          tags: ${{ secrets.DOCKER_USERNAME }}/qmediasync:beta
           file: Dockerfile_beta
           platforms: linux/arm64
           secrets: |
