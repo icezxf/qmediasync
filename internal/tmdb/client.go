@@ -196,7 +196,7 @@ type TvSeasonExternalIds struct {
 }
 
 // GetTvSeasonExternalIds 获取某一季的外部 ID（主要是 IMDb ID）
-func (c *Client) GetTvSeasonExternalIds(tvId int, seasonNumber int) (*TvSeasonExternalIds, error) {
+func (c *Client) GetTvSeasonExternalIds(tvId int64, seasonNumber int) (*TvSeasonExternalIds, error) {
 	respResult := TvSeasonExternalIds{}
 	req := c.resty.R().SetMethod("GET").SetResult(&respResult)
 	url := fmt.Sprintf("/tv/%d/season/%d/external_ids", tvId, seasonNumber)
