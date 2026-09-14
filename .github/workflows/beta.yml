@@ -2,7 +2,7 @@ name: beta
 on:
   push:
     branches:
-      - "dev"
+      - "main"
     tags-ignore:
       - "*"
 
@@ -46,7 +46,7 @@ jobs:
         with:
           context: .
           push: true
-          tags: ${{ secrets.DOCKER_USERNAME }}/qmediasync:beta
+          tags: ${{ secrets.DOCKER_USERNAME }}/qmediasync:latest
           file: Dockerfile_beta
           platforms: linux/arm64
           secrets: |
