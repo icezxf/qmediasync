@@ -3,6 +3,7 @@ package scrape
 import (
 	"Q115-STRM/internal/baidupan"
 	"Q115-STRM/internal/db"
+	"Q115-STRM/internal/douban" // 👈 新增
 	"Q115-STRM/internal/helpers"
 	"Q115-STRM/internal/models"
 	"Q115-STRM/internal/notificationmanager"
@@ -256,7 +257,41 @@ func (m *movieScrapeImpl) ScrapeMovieMedia(mediaFile *models.ScrapeMediaFile) er
 		tmdbInfo.ReleasesDate = releasesDate.Results
 	}
 	m.MakeMediaFromTMDB(mediaFile, tmdbInfo)
+
+	// ===== 豆瓣评分补全 =====
+	m.enrichWithDoubanRating(mediaFile)
+	// ===== 结束豆瓣评分补全 =====
+
 	return nil
+}
+
+// enrichWithDoubanRating 用豆瓣评分覆盖 TMDB 评分
+func (m *movieScrapeImpl) enrichWithDoubanRating(mediaFile *models.ScrapeMediaFile) {
+	if mediaFile.Media == nil {
+		return
+	}
+	// 其他类型（从 NFO 读取的）不处理
+	if mediaFile.MediaType == models.MediaTypeOther {
+		return
+	}
+
+	doubanClient := douban.NewClient("") // 如果有豆瓣 Cookie，可以填入
+	title := mediaFile.Media.Name
+	year := mediaFile.Media.Year
+
+	rating, err := doubanClient.GetRating(title, year)
+	if err != nil {
+		helpers.AppLogger.Warnf("[豆瓣] 获取评分失败: %v, 电影: %s", err, title)
+		return
+	}
+	if rating > 0 {
+		oldRating := mediaFile.Media.VoteAverage
+		mediaFile.Media.VoteAverage = rating
+		mediaFile.Media.Save()
+		helpers.AppLogger.Infof("[豆瓣] 评分已更新: %s (%.1f -> %.1f)", title, oldRating, rating)
+	} else {
+		helpers.AppLogger.Infof("[豆瓣] 未找到评分，保留 TMDB 评分: %s (%.1f)", title, mediaFile.Media.VoteAverage)
+	}
 }
 
 func (m *movieScrapeImpl) GenrateCategory(mediaFile *models.ScrapeMediaFile) error {
@@ -892,7 +927,7 @@ func (m *movieScrapeImpl) Rollback(mediaFile *models.ScrapeMediaFile) error {
 		if mediaFile.RenameType != models.RenameTypeMove {
 			videoFileId := mediaFile.VideoFileId
 			if mediaFile.SourceType != models.SourceType115 {
-				videoFileId = strings.Replace(videoFileId, mediaFile.PathId, pathId, 1)
+				videoFileId = strings.Replace(videoFileId, mediaFile.Media.PathId, pathId, 1)
 			}
 			// 检查文件是否存在，存在就改名，不存在就移动
 			newVideoId, _ := m.renameImpl.ExistsAndRename(videoFileId, newBaseName+mediaFile.VideoExt)
