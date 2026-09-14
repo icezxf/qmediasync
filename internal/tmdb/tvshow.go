@@ -50,6 +50,12 @@ type TvNetwork struct {
 	OriginCountry string `json:"origin_country"` // 原始国家
 }
 
+// 👇 新增这个结构体
+type ExternalIds struct {
+	ImdbID string `json:"imdb_id"`
+	TvdbID int    `json:"tvdb_id"`
+}
+
 type TvDetail struct {
 	SearchTv
 	EpisodeRunTime      []int               `json:"episode_run_time"`     // 每集时长
@@ -66,7 +72,7 @@ type TvDetail struct {
 	Tagline             string              `json:"tagline"`              // 标语
 	Type                string              `json:"type"`                 // 类型
 	Homepage            string              `json:"homepage"`             // 首页
-	ImdbID              string              `json:"imdb_id"`   // 👈 新增这一行
+	ExternalIds         *ExternalIds        `json:"external_ids,omitempty"`  // 👈 加这一个
 }
 
 type TvKeywords struct {
@@ -139,7 +145,7 @@ func (c *Client) GetTvDetail(tvID int64, language string) (*TvDetail, error) {
 	respResult := TvDetail{}
 	req := c.resty.R().SetMethod("GET").SetResult(&respResult)
 	// req.SetQueryParam("api_key", c.apiKey)
-	resp, err := c.doRequest(fmt.Sprintf("/tv/%d?language=%s", tvID, language), req, MakeRequestConfig(2, 5, 5))
+	resp, err := c.doRequest(fmt.Sprintf("/tv/%d?language=%s&append_to_response=external_ids", tvID, language), req, MakeRequestConfig(2, 5, 5))
 	if err != nil {
 		helpers.TMDBLog.Errorf("获取TV详情失败:%+v", err)
 		return nil, err
