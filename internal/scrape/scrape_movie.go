@@ -578,4 +578,265 @@ func (sm *movieScrapeImpl) GenerateMovieNfo(mediaFile *models.ScrapeMediaFile, l
 			subtitleStreams = append(subtitleStreams, helpers.StreamSubtitle{
 				Language: sub.Language,
 				Codec:    sub.Codec,
-	
+				Micodec:  sub.Micodec,
+			})
+		}
+	}
+	poster := mediaFile.Media.PosterPath
+	backdrop := mediaFile.Media.BackdropPath
+	thumbs := make([]helpers.Thumb, 0)
+	thumbs = append(thumbs, helpers.Thumb{
+		Aspect: "poster",
+		Link:   poster,
+	})
+	thumbs = append(thumbs, helpers.Thumb{
+		Aspect: "backdrop",
+		Link:   backdrop,
+	})
+	has, result := helpers.ChineseToPinyin(mediaFile.Media.Name)
+	originalTitle := mediaFile.Media.OriginalName
+	SortTitle := mediaFile.Media.Name
+	if has {
+		originalTitle = fmt.Sprintf("%s #(%s)", mediaFile.Media.Name, result)
+		SortTitle = fmt.Sprintf("%s #(%s)", result, mediaFile.Media.Name)
+	}
+	m := &helpers.Movie{
+		Title:         mediaFile.Media.Name,
+		OriginalTitle: originalTitle,
+		SortTitle:     SortTitle,
+		Ratings: struct {
+			Rating []helpers.Rating `xml:"rating,omitempty"`
+		}{
+			Rating: rates,
+		},
+		UserRating: mediaFile.Media.VoteAverage,
+		Outline:    fmt.Sprintf("<![CDATA[%s]]>", mediaFile.Media.Overview),
+		Plot:       fmt.Sprintf("<![CDATA[%s]]>", mediaFile.Media.Overview),
+		Tagline:    mediaFile.Media.Tagline,
+		Runtime:    mediaFile.Media.Runtime,
+		Id:         mediaFile.Media.ImdbId,
+		TmdbId:     mediaFile.Media.TmdbId,
+		ImdbId:     mediaFile.Media.ImdbId,
+		Uniqueid: []helpers.UniqueId{
+			{
+				Id:      mediaFile.Media.ImdbId,
+				Type:    "imdb",
+				Default: true,
+			},
+			{
+				Id:      fmt.Sprintf("%d", mediaFile.Media.TmdbId),
+				Type:    "tmdb",
+				Default: false,
+			},
+		},
+		Genre:     genres,
+		Director:  mediaFile.Media.Director,
+		Premiered: mediaFile.Media.ReleaseDate,
+		Year:      mediaFile.Media.Year,
+		DateAdded: time.Now().Format("2006-01-02"),
+		FileInfo: struct {
+			StreamDetails struct {
+				Video    []helpers.StreamVideo    `xml:"video,omitempty"`
+				Audio    []helpers.StreamAudio    `xml:"audio,omitempty"`
+				Subtitle []helpers.StreamSubtitle `xml:"subtitle,omitempty"`
+			} `xml:"streamdetails,omitempty"`
+		}{
+			StreamDetails: struct {
+				Video    []helpers.StreamVideo    `xml:"video,omitempty"`
+				Audio    []helpers.StreamAudio    `xml:"audio,omitempty"`
+				Subtitle []helpers.StreamSubtitle `xml:"subtitle,omitempty"`
+			}{
+				Video:    videoStreams,
+				Audio:    audioStreams,
+				Subtitle: subtitleStreams,
+			},
+		},
+		Thumb: thumbs,
+		Fanart: &helpers.Fanart{
+			Thumb: []helpers.Thumb{
+				{
+					Aspect: "fanart",
+					Link:   backdrop,
+				},
+			},
+		},
+	}
+	if excludeNoImageActor {
+		m.Actor = make([]helpers.Actor, 0)
+		for _, actor := range mediaFile.Media.Actors {
+			if actor.Thumb != "" {
+				m.Actor = append(m.Actor, actor)
+			}
+		}
+	} else {
+		m.Actor = mediaFile.Media.Actors
+	}
+	err := helpers.WriteMovieNfo(m, nfoPath)
+	if err != nil {
+		helpers.AppLogger.Errorf("生成电影nfo文件失败，文件路径：%s 错误： %v", nfoPath, err)
+		return err
+	}
+	helpers.AppLogger.Infof("生成电影nfo文件成功，文件路径：%s", nfoPath)
+	return nil
+}
+
+func (m *movieScrapeImpl) MakeMediaFromTMDB(mediaFile *models.ScrapeMediaFile, tmdbInfo *models.TmdbInfo) {
+	if mediaFile.MediaId == 0 {
+		mediaFile.Media = &models.Media{
+			ScrapePathId: mediaFile.ScrapePathId,
+			MediaType:    mediaFile.MediaType,
+			Name:         mediaFile.Name,
+			Year:         mediaFile.Year,
+			TmdbId:       mediaFile.TmdbId,
+			Status:       models.MediaStatusUnScraped,
+		}
+		helpers.AppLogger.Infof("创建新的Media对象: %s, TMDBID=%d, 类型=%s", mediaFile.Media.Name, mediaFile.Media.TmdbId, mediaFile.Media.MediaType)
+	} else {
+		mediaFile.QueryRelation()
+	}
+	mediaFile.Media.FillInfoByTmdbInfo(tmdbInfo)
+	mediaFile.Media.Save()
+	mediaFile.MediaId = mediaFile.Media.ID
+	mediaFile.Name = mediaFile.Media.Name
+	mediaFile.Year = mediaFile.Media.Year
+	mediaFile.Save()
+}
+
+func (m *movieScrapeImpl) GetMovieRealName(sm *models.ScrapeMediaFile, name string, filetype string) string {
+	if filetype == "nfo" {
+		return fmt.Sprintf("%s.nfo", sm.NewVideoBaseName)
+	}
+	if sm.ScrapeType == models.ScrapeTypeOnly {
+		return fmt.Sprintf("%s-%s", sm.NewVideoBaseName, name)
+	} else {
+		return name
+	}
+}
+
+func (m *movieScrapeImpl) Rollback(mediaFile *models.ScrapeMediaFile) error {
+	if mediaFile.MediaType == models.MediaTypeOther {
+		return nil
+	}
+	mediaFile.QueryRelation()
+	newBaseName := fmt.Sprintf("%s (%d) {tmdbid-%d}", mediaFile.Name, mediaFile.Year, mediaFile.TmdbId)
+	if mediaFile.ScrapeType == models.ScrapeTypeOnly {
+		files := make([]models.WillDeleteFile, 0)
+		destPath := mediaFile.GetDestFullMoviePath()
+		nfoName := m.GetMovieRealName(mediaFile, "", "nfo")
+		files = append(files, models.WillDeleteFile{FullFilePath: filepath.Join(destPath, nfoName)})
+		imageList := []string{"poster.jpg", "clearlogo.jpg", "clearart.jpg", "square.jpg", "logo.jpg", "fanart.jpg", "backdrop.jpg", "background.jpg", "4kbackground.jpg", "thumb.jpg", "banner.jpg", "disc.jpg"}
+		for _, im := range imageList {
+			imageName := m.GetMovieRealName(mediaFile, im, "image")
+			files = append(files, models.WillDeleteFile{FullFilePath: filepath.Join(destPath, imageName)})
+		}
+		err := m.renameImpl.CheckAndDeleteFiles(mediaFile, files)
+		if err != nil {
+			helpers.AppLogger.Errorf("删除已上传的元数据文失败: %v", err)
+			return err
+		}
+		helpers.AppLogger.Infof("删除已上传的元数据文件成功: %v", files)
+		if mediaFile.Media.SubtitleFiles != nil {
+			for _, sub := range mediaFile.Media.SubtitleFiles {
+				m.renameImpl.Rename(sub.FileId, newBaseName+filepath.Ext(sub.FileName))
+			}
+		}
+		m.renameImpl.Rename(mediaFile.Media.VideoFileId, newBaseName+mediaFile.VideoExt)
+		m.renameImpl.Rename(mediaFile.PathId, newBaseName)
+	}
+	if mediaFile.ScrapeType == models.ScrapeTypeScrapeAndRename || mediaFile.ScrapeType == models.ScrapeTypeOnlyRename {
+		parentPath := filepath.Dir(mediaFile.Path)
+		var newPath string
+		var pathId string
+		var existsPathId string = ""
+		if mediaFile.Path == mediaFile.SourcePath {
+			parentPath = mediaFile.SourcePath
+			newPath = mediaFile.SourcePath
+		} else {
+			newPath = filepath.Join(parentPath, newBaseName)
+		}
+		if mediaFile.RenameType != models.RenameTypeMove && parentPath != mediaFile.SourcePath {
+			var eerr error
+			existsPathId, eerr = m.renameImpl.ExistsAndRename(mediaFile.PathId, newBaseName)
+			if eerr != nil {
+				helpers.AppLogger.Errorf("重命名旧文件夹 %s 失败: %v", mediaFile.PathId, eerr)
+				return eerr
+			}
+		}
+		if existsPathId == "" {
+			if parentPath != mediaFile.SourcePath {
+				var err error
+				pathId, err = m.renameImpl.CheckAndMkDir(newPath, mediaFile.SourcePath, mediaFile.SourcePathId)
+				if err != nil {
+					helpers.AppLogger.Errorf("创建父文件夹 %s 失败: %v", newPath, err)
+					return err
+				}
+			} else {
+				pathId = mediaFile.SourcePathId
+				newPath = mediaFile.SourcePath
+			}
+		} else {
+			pathId = existsPathId
+		}
+		if mediaFile.Media.SubtitleFiles != nil {
+			for _, sub := range mediaFile.Media.SubtitleFiles {
+				exists := false
+				if mediaFile.SourceType != models.SourceType115 {
+					sub.FileId = strings.Replace(sub.FileId, mediaFile.Media.PathId, pathId, 1)
+				}
+				if mediaFile.RenameType != models.RenameTypeMove {
+					newSubId, _ := m.renameImpl.ExistsAndRename(sub.FileId, newBaseName+filepath.Ext(sub.FileName))
+					if newSubId != "" {
+						exists = true
+					}
+				}
+				if exists {
+					continue
+				}
+				moveFile := models.MoveNewFileToSourceFile{
+					FileId:       sub.FileId,
+					FileFullPath: filepath.Join(newPath, newBaseName, filepath.Ext(sub.FileName)),
+					PathId:       pathId,
+				}
+				merr := m.renameImpl.MoveFiles(moveFile)
+				if merr != nil {
+					continue
+				}
+				m.renameImpl.Rename(moveFile.FileId, newBaseName+filepath.Ext(sub.FileName))
+			}
+		}
+		exists := false
+		if mediaFile.RenameType != models.RenameTypeMove {
+			videoFileId := mediaFile.VideoFileId
+			if mediaFile.SourceType != models.SourceType115 {
+				videoFileId = strings.Replace(videoFileId, mediaFile.Media.PathId, pathId, 1)
+			}
+			newVideoId, _ := m.renameImpl.ExistsAndRename(videoFileId, newBaseName+mediaFile.VideoExt)
+			if newVideoId != "" {
+				exists = true
+			}
+		}
+		if !exists {
+			moveFile := models.MoveNewFileToSourceFile{
+				FileId: mediaFile.Media.VideoFileId,
+				PathId: pathId,
+			}
+			merr := m.renameImpl.MoveFiles(moveFile)
+			if merr != nil {
+				helpers.AppLogger.Errorf("移动视频文件失败: %v", merr)
+				return merr
+			}
+			if mediaFile.SourceType != models.SourceType115 {
+				moveFile.FileId = strings.Replace(moveFile.FileId, mediaFile.Media.PathId, pathId, 1)
+			}
+			m.renameImpl.Rename(moveFile.FileId, newBaseName+mediaFile.VideoExt)
+		}
+		derr := m.renameImpl.DeleteDir(mediaFile.Media.Path, mediaFile.Media.PathId)
+		if derr != nil {
+			helpers.AppLogger.Errorf("删除目标目录失败: %v", derr)
+			return derr
+		}
+	}
+	db.Db.Delete(&models.Media{}, mediaFile.MediaId)
+	db.Db.Delete(&models.ScrapeMediaFile{}, mediaFile.ID)
+	return nil
+}
