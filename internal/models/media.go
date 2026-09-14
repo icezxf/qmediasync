@@ -213,7 +213,10 @@ func (m *Media) FillInfoByTmdbInfo(tmdbInfo *TmdbInfo) {
 		m.NumberOfSeasons = tmdbInfo.TvShowDetail.NumberOfSeasons
 		m.NumberOfEpisodes = tmdbInfo.TvShowDetail.NumberOfEpisodes
 		m.OriginalLanguage = tmdbInfo.TvShowDetail.OriginalLanguage
-		m.ImdbId = tmdbInfo.TvShowDetail.ImdbID
+		// 👇 新增这三行
+		if tmdbInfo.TvShowDetail.ExternalIds != nil {
+			m.ImdbId = tmdbInfo.TvShowDetail.ExternalIds.ImdbID
+		}
 	} else {
 		m.TmdbId = tmdbInfo.MovieDetail.ID
 		m.Name = tmdbInfo.MovieDetail.Title
