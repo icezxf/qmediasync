@@ -330,7 +330,7 @@ func (t *tvShowScrapeImpl) RollbackTvShowSeason(mediaFile *models.ScrapeMediaFil
 			return err
 		}
 	}
-	mediaFile.MediaSeason.Status = models.MediaStatusUnscraped
+	mediaFile.MediaSeason.Status = models.MediaStatusUnScraped
 	mediaFile.MediaSeason.Save()
 	helpers.AppLogger.Infof("回滚电视剧 %s 季 %d 成功", mediaFile.Name, mediaFile.SeasonNumber)
 	return nil
