@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -14,13 +15,10 @@ import (
 )
 
 const (
-	// 小程序 API 响应较快，间隔可以设为 2 秒
 	minRequestInterval = 2 * time.Second
-	cacheTTL = 30 * time.Minute
-	// 图片里提供的 Key，建议用环境变量覆盖
-	defaultApiKey = "0ac44ae016490db2204ce0a042db2916"
-	// 备用 Key
-	backupApiKey = "054022eaeae0b00e0fc068c0c0a2102a"
+	cacheTTL           = 30 * time.Minute
+	// 你验证过可用的官方 Key
+	defaultApiKey = "0ab215a8b1977939201640fa14c66bab"
 )
 
 // ==================== 全局限速与缓存 ====================
@@ -67,18 +65,15 @@ func setCache(key string, rating float64) {
 	ratingCache[key] = cacheEntry{rating: rating, expire: time.Now().Add(cacheTTL)}
 }
 
-// ==================== API 结构体 ====================
+// ==================== API 响应结构 ====================
 
-type doubanSearchResponse struct {
-	Subjects []struct {
-		Title  string `json:"title"`
-		Year   string `json:"year"`
-		Rating struct {
-			Value float64 `json:"value"`
-		} `json:"rating"`
-	} `json:"subjects"`
-	Msg  string `json:"msg"`
-	Code int    `json:"code"`
+type doubanApiResponse struct {
+	Rating struct {
+		Average string `json:"average"` // 官方 API 返回的是字符串 "7.7"
+	} `json:"rating"`
+	Title string `json:"title"`
+	Msg   string `json:"msg"`
+	Code  int    `json:"code"`
 }
 
 // ==================== Client ====================
@@ -93,7 +88,7 @@ func NewClient(apiKey string) *Client {
 		apiKey = os.Getenv("DOUBAN_API_KEY")
 	}
 	if apiKey == "" {
-		apiKey = defaultApiKey // 兜底使用图片里的 Key
+		apiKey = defaultApiKey
 	}
 	return &Client{
 		httpClient: &http.Client{Timeout: 15 * time.Second},
@@ -101,31 +96,29 @@ func NewClient(apiKey string) *Client {
 	}
 }
 
-// GetRatingByTitle 通过标题+年份搜索获取评分
-func (c *Client) GetRatingByTitle(title string, year int) (float64, error) {
-	if strings.TrimSpace(title) == "" {
+// GetRatingByImdb 通过 IMDb ID 获取豆瓣评分（推荐）
+func (c *Client) GetRatingByImdb(imdbId string) (float64, error) {
+	if strings.TrimSpace(imdbId) == "" {
 		return 0, nil
 	}
 
-	cacheKey := fmt.Sprintf("%s_%d", title, year)
+	cacheKey := "imdb_" + imdbId
 	if rating, ok := getCache(cacheKey); ok {
 		return rating, nil
 	}
 
 	globalRateLimit()
 
-	// 构造搜索 URL
-	searchURL := fmt.Sprintf("https://frodo.douban.com/api/v2/movie/search?q=%s&apiKey=%s",
-		url.QueryEscape(title), c.apiKey)
+	apiURL := fmt.Sprintf("https://api.douban.com/v2/movie/imdb/%s", imdbId)
+	formData := url.Values{}
+	formData.Set("apikey", c.apiKey)
 
-	req, err := http.NewRequest("GET", searchURL, nil)
+	req, err := http.NewRequest("POST", apiURL, strings.NewReader(formData.Encode()))
 	if err != nil {
 		return 0, err
 	}
-
-	// 关键：必须带上微信小程序的 Headers，否则直接 403
-	req.Header.Set("User-Agent", "MicroMessenger/")
-	req.Header.Set("Referer", "https://servicewechat.com/wx2f9b06c1de1ccfca/91/page-frame.html")
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -134,15 +127,10 @@ func (c *Client) GetRatingByTitle(title string, year int) (float64, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		// 如果返回 403 或 112，尝试备用 Key
-		if resp.StatusCode == http.StatusForbidden || resp.StatusCode == 400 {
-			helpers.AppLogger.Warnf("[豆瓣API] 主 Key 可能失效，尝试备用 Key")
-			// 可以在这里实现备用 Key 的递归请求，为简单先返回错误
-		}
 		return 0, fmt.Errorf("豆瓣 API 返回非 200: %d", resp.StatusCode)
 	}
 
-	var result doubanSearchResponse
+	var result doubanApiResponse
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return 0, err
 	}
@@ -152,22 +140,14 @@ func (c *Client) GetRatingByTitle(title string, year int) (float64, error) {
 		return 0, fmt.Errorf("douban api error: %s", result.Msg)
 	}
 
-	// 遍历搜索结果，匹配年份，提取评分
-	var rating float64
-	for _, sub := range result.Subjects {
-		// 如果年份匹配，或者第一项就是最匹配的，取评分
-		if year > 0 && sub.Year != "" && !strings.Contains(sub.Year, fmt.Sprintf("%d", year)) {
-			continue
-		}
-		if sub.Rating.Value > 0 {
-			rating = sub.Rating.Value
-			break
-		}
+	ratingStr := strings.TrimSpace(result.Rating.Average)
+	if ratingStr == "" {
+		return 0, nil
 	}
 
-	// 如果年份没匹配上，退而求其次取第一条有评分的
-	if rating == 0 && len(result.Subjects) > 0 {
-		rating = result.Subjects[0].Rating.Value
+	rating, err := strconv.ParseFloat(ratingStr, 64)
+	if err != nil {
+		return 0, nil
 	}
 
 	setCache(cacheKey, rating)
