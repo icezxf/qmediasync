@@ -20,6 +20,11 @@ type TVShowSeason struct {
 	Year          int      `xml:"year,omitempty"`
 	SeasonNumber  int      `xml:"seasonnumber,omitempty"`
 	DateAdded     string   `xml:"dateadded,omitempty"`
+
+	// 👇 新增以下三个字段，用于写入豆瓣季评分
+	UserRating string `xml:"userrating,omitempty"`
+	Rating     string `xml:"rating,omitempty"`
+	Votes      string `xml:"votes,omitempty"`
 }
 
 func ReadSeasonNfo(r io.Reader) (*TVShowSeason, error) {
