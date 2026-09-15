@@ -173,6 +173,11 @@ func (t *tvShowScrapeImpl) ScrapeSeasonMedia(mediaFile *models.ScrapeMediaFile) 
 	}
 	t.MakeMediaSeasonFromTMDB(mediaFile, seasonDetail)
 	mediaFile.NewSeasonPathName = mediaFile.GetDestSeasonPath()
+
+	// ===== 豆瓣季评分补全（必须在 GenerateSeasonNfo 之前）=====
+	t.enrichSeasonWithDoubanRating(mediaFile)
+	// ===== 结束 =====
+
 	if mediaFile.ScrapeType != models.ScrapeTypeOnlyRename {
 		localTempSeasonPath := mediaFile.GetTmpFullSeasonPath()
 		if mkdirErr := os.MkdirAll(localTempSeasonPath, 0777); mkdirErr != nil {
@@ -196,11 +201,6 @@ func (t *tvShowScrapeImpl) ScrapeSeasonMedia(mediaFile *models.ScrapeMediaFile) 
 	if err := t.UpdateSeasonDataToAllEpisodeBySeason(mediaFile); err != nil {
 		return err
 	}
-
-	// ===== 豆瓣季评分补全 =====
-	t.enrichSeasonWithDoubanRating(mediaFile)
-	// ===== 结束 =====
-
 	return nil
 }
 
@@ -212,7 +212,7 @@ func (t *tvShowScrapeImpl) enrichSeasonWithDoubanRating(mediaFile *models.Scrape
 
 	doubanClient := douban.NewClient("")
 
-	// 优先：季独立 IMDb ID（TMDB 如果有返回，最精准）
+	// 优先：季独立 IMDb ID（欧美剧如果 TMDB 有返回，最精准）
 	externalIds, eerr := t.tmdbClient.GetTvSeasonExternalIds(mediaFile.TmdbId, mediaFile.SeasonNumber)
 	if eerr == nil && externalIds != nil && externalIds.ImdbId != "" {
 		rating, err := doubanClient.GetTVRatingByImdb(externalIds.ImdbId)
