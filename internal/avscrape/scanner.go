@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"Q115-STRM/internal/models"
+	"Q115-STRM/internal/helpers"
 
 	"gorm.io/gorm"
 )
@@ -45,6 +46,7 @@ func (s *Scanner) Scan(pathID uint) error {
 	if err != nil {
 		return fmt.Errorf("列出目录失败: %w", err)
 	}
+	helpers.AppLogger.Infof("[AV扫描] 开始处理目录 %s，共 %d 个文件", path.SourcePath, len(files))
 
 	for _, name := range files {
 		ext := strings.ToLower(filepath.Ext(name))
@@ -54,9 +56,11 @@ func (s *Scanner) Scan(pathID uint) error {
 		fullPath := path.SourcePath + "/" + name
 		code := ExtractCode(name)
 		if code == "" {
+			helpers.AppLogger.Warnf("[AV扫描] 无法识别番号: %s", name)
 			s.recordTask("", fullPath, "failed", "无法识别番号", "")
 			continue
 		}
+		helpers.AppLogger.Infof("[AV扫描] 处理文件 %s → 番号 %s", name, code)
 
 		// 已刮削过，跳过刮削，但可能还需要整理
 		var existing models.AVMedia
