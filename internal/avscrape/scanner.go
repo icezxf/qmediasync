@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"Q115-STRM/internal/models"
 	"Q115-STRM/internal/helpers"
+	"Q115-STRM/internal/models"
 
 	"gorm.io/gorm"
 )
@@ -27,7 +27,7 @@ func NewScanner(db *gorm.DB) *Scanner {
 	return &Scanner{DB: db, Svc: NewService(db)}
 }
 
-// Scan 扫描一个 AV 刮削目录
+// Scan 扫描一个 AV 刮削目录（递归遍历所有子目录）
 func (s *Scanner) Scan(pathID uint) error {
 	var path models.AVPath
 	if err := s.DB.First(&path, pathID).Error; err != nil {
@@ -42,25 +42,22 @@ func (s *Scanner) Scan(pathID uint) error {
 		return fmt.Errorf("创建文件系统失败: %w", err)
 	}
 
-	files, err := fs.List(path.SourcePath)
+	// 递归收集所有视频文件
+	videoFiles, err := walkVideos(fs, path.SourcePath, 0)
 	if err != nil {
-		return fmt.Errorf("列出目录失败: %w", err)
+		return fmt.Errorf("遍历目录失败: %w", err)
 	}
-	helpers.AppLogger.Infof("[AV扫描] 开始处理目录 %s，共 %d 个文件", path.SourcePath, len(files))
+	helpers.AppLogger.Infof("[AV扫描] 目录 %s 共找到 %d 个视频文件", path.SourcePath, len(videoFiles))
 
-	for _, name := range files {
-		ext := strings.ToLower(filepath.Ext(name))
-		if !videoExts[ext] {
-			continue
-		}
-		fullPath := path.SourcePath + "/" + name
+	for _, fullPath := range videoFiles {
+		name := filepath.Base(fullPath)
 		code := ExtractCode(name)
 		if code == "" {
-			helpers.AppLogger.Warnf("[AV扫描] 无法识别番号: %s", name)
+			helpers.AppLogger.Warnf("[AV扫描] 无法识别番号: %s", fullPath)
 			s.recordTask("", fullPath, "failed", "无法识别番号", "")
 			continue
 		}
-		helpers.AppLogger.Infof("[AV扫描] 处理文件 %s → 番号 %s", name, code)
+		helpers.AppLogger.Infof("[AV扫描] 处理文件 %s → 番号 %s", fullPath, code)
 
 		// 已刮削过，跳过刮削，但可能还需要整理
 		var existing models.AVMedia
@@ -184,6 +181,40 @@ func (s *Scanner) recordTask(code, filePath, status, msg, provider string) {
 		Message:  msg,
 		Provider: provider,
 	})
+}
+
+// walkVideos 递归遍历目录，返回所有视频文件的完整路径
+// 跳过 extrafanart / trailers 等元数据目录
+func walkVideos(fs FileSystem, root string, depth int) ([]string, error) {
+	if depth > 10 {
+		return nil, nil
+	}
+	entries, err := fs.ListDetailed(root)
+	if err != nil {
+		return nil, err
+	}
+	var videos []string
+	for _, e := range entries {
+		if e.IsDir {
+			lower := strings.ToLower(e.Name)
+			if lower == "extrafanart" || lower == "trailers" ||
+				lower == "backdrops" || lower == "thumbnails" ||
+				lower == "season" || strings.HasPrefix(lower, "season ") {
+				// 跳过元数据目录
+				continue
+			}
+			sub, err := walkVideos(fs, e.Path, depth+1)
+			if err == nil {
+				videos = append(videos, sub...)
+			}
+			continue
+		}
+		ext := strings.ToLower(filepath.Ext(e.Name))
+		if videoExts[ext] {
+			videos = append(videos, e.Path)
+		}
+	}
+	return videos, nil
 }
 
 // renderTemplate 渲染命名模板
