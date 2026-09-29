@@ -1,4 +1,3 @@
-cd /root/internal/avscrape && cat > nfo.go <<'EOF'
 package avscrape
 
 import (
