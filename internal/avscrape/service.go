@@ -1,4 +1,3 @@
-cd /root/internal/avscrape && cat > service.go <<'EOF'
 package avscrape
 
 import (
