@@ -140,36 +140,87 @@ func (s *Scanner) writeMediaFiles(fs FileSystem, path *models.AVPath, r *ScrapeR
 	return nil
 }
 
-// organize 按命名模板整理文件到目标路径
-func (s *Scanner) organize(fs FileSystem, path *models.AVPath, media *models.AVMedia, videoPath, videoName string) error {
-	// 渲染模板，得到相对路径（可能含多级目录）
+// organize 按命名模板整理文件到目标路径，并在目标目录里生成 NFO 和图片
+func (s *Scanner) organize(fs FileSystem, path *models.AVPath, media *models.AVMedia, videoPath, videoName string, r *ScrapeResult) error {
 	relDir := renderTemplate(path.NameTemplate, media)
 	if relDir == "" {
 		relDir = media.Code
 	}
-	// 拼接最终目录
 	targetDir := path.TargetPath + "/" + relDir
-
 	if err := fs.MkdirAll(targetDir); err != nil {
 		return err
 	}
 
 	ext := filepath.Ext(videoName)
 	newName := media.Code + ext
+	newVideoPath := targetDir + "/" + newName
 
-	switch path.MoveMethod {
-	case "copy":
-		if err := fs.Copy(videoPath, targetDir); err != nil {
+	// 1. 移动/复制视频到目标目录
+	if !fs.Exists(newVideoPath) {
+		switch path.MoveMethod {
+		case "copy":
+			if err := fs.Copy(videoPath, targetDir); err != nil {
+				return fmt.Errorf("复制视频失败: %w", err)
+			}
+			if filepath.Base(videoPath) != newName {
+				oldPath := targetDir + "/" + filepath.Base(videoPath)
+				if err := fs.Rename(oldPath, newName); err != nil {
+					return fmt.Errorf("重命名视频失败: %w", err)
+				}
+			}
+		default:
+			if err := fs.Move(videoPath, targetDir, newName); err != nil {
+				return fmt.Errorf("移动视频失败: %w", err)
+			}
+		}
+	}
+
+	// 2. 在目标目录里写 NFO 和图片（覆盖旧文件）
+	if r != nil {
+		if err := s.writeMetaFiles(fs, targetDir, media.Code, r); err != nil {
 			return err
 		}
-		if filepath.Base(videoPath) != newName {
-			newPath := targetDir + "/" + filepath.Base(videoPath)
-			return fs.Rename(newPath, newName)
-		}
-		return nil
-	default:
-		return fs.Move(videoPath, targetDir, newName)
 	}
+
+	// 3. 移动模式：尝试清理源目录（含残留的 NFO/图片）
+	if path.MoveMethod != "copy" {
+		s.cleanupSourceDir(fs, filepath.Dir(videoPath), path.SourcePath)
+	}
+
+	return nil
+}
+
+// cleanupSourceDir 清理源目录
+// 如果源目录下已经没有视频文件，就把整个目录删掉（含残留的 NFO/图片）
+// 但不会删除 SourcePath 本身
+func (s *Scanner) cleanupSourceDir(fs FileSystem, sourceDir, rootSourcePath string) {
+	// 不删根目录
+	if sourceDir == rootSourcePath || strings.TrimRight(sourceDir, "/") == strings.TrimRight(rootSourcePath, "/") {
+		return
+	}
+
+	entries, err := fs.ListDetailed(sourceDir)
+	if err != nil {
+		helpers.AppLogger.Warnf("[AV扫描] 清理源目录时列出失败: %s, %v", sourceDir, err)
+		return
+	}
+
+	// 还有视频就跳过
+	for _, e := range entries {
+		if e.IsDir {
+			continue
+		}
+		if videoExts[strings.ToLower(filepath.Ext(e.Name))] {
+			return
+		}
+	}
+
+	// 删除整个源目录（含所有残留元数据）
+	if err := fs.DeleteDir(sourceDir); err != nil {
+		helpers.AppLogger.Warnf("[AV扫描] 删除源目录失败: %s, %v", sourceDir, err)
+		return
+	}
+	helpers.AppLogger.Infof("[AV扫描] 已清理源目录: %s", sourceDir)
 }
 
 // recordTask 记录任务
