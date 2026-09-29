@@ -18,7 +18,7 @@ type FS115 struct {
 	ctx    context.Context
 }
 
-func NewFS115(p *AVPath) (*FS115, error) {
+func NewFS115(p *models.AVPath) (*FS115, error) {
 	account, err := models.GetAccountById(p.AccountID)
 	if err != nil {
 		return nil, fmt.Errorf("获取账号失败: %w", err)
