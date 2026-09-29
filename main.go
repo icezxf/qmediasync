@@ -157,6 +157,9 @@ func (app *App) StartHttpsServer(r *gin.Engine) {
 
 func (app *App) StartHttpServer(r *gin.Engine) {
 	host := helpers.GlobalConfig.HttpHost
+	if host == "" {
+		host = ":12333"
+	}
 	// 同时在12333端口上启动http服务
 	app.httpServer = &http.Server{
 		Addr:    host,
@@ -469,7 +472,7 @@ func initOthers() {
 			Method:      method,
 			Duration:    duration,
 			IsThrottled: isThrottled,
-			AccountID:   0, // 可以后续扩展传入账号ID
+			AccountID:   0,
 		}
 		if err := models.CreateRequestStat(stat); err != nil {
 			helpers.V115Log.Errorf("写入请求统计失败: %v", err)
@@ -540,6 +543,44 @@ func main() {
 	getDataAndConfigDir()
 	initTimeZone()
 	newApp()
+
+	// ===== 初始化配置 =====
+	configFile := filepath.Join(helpers.ConfigDir, "config.yml")
+	if !helpers.PathExists(configFile) {
+		helpers.AppLogger = nil
+		defaultCfg := helpers.MakeDefaultConfig()
+		// 用环境变量覆盖默认值
+		if v := os.Getenv("DB_HOST"); v != "" {
+			defaultCfg.Db.PostgresConfig.Host = v
+		}
+		if v := os.Getenv("DB_PORT"); v != "" {
+			defaultCfg.Db.PostgresConfig.Port = helpers.StringToInt(v)
+		}
+		if v := os.Getenv("DB_USER"); v != "" {
+			defaultCfg.Db.PostgresConfig.User = v
+		}
+		if v := os.Getenv("DB_PASSWORD"); v != "" {
+			defaultCfg.Db.PostgresConfig.Password = v
+		}
+		if v := os.Getenv("DB_NAME"); v != "" {
+			defaultCfg.Db.PostgresConfig.Database = v
+		}
+		if v := os.Getenv("DB_SSLMODE"); v == "require" {
+			defaultCfg.Db.PostgresConfig.SSL = true
+		}
+		// 默认 SQLite，最稳定
+		defaultCfg.Db.Engine = helpers.DbEngineSqlite
+		defaultCfg.Db.SqliteFile = "qmediasync.db"
+		if err := helpers.SaveConfig(defaultCfg); err != nil {
+			log.Fatal("生成默认配置失败:", err)
+		}
+		fmt.Printf("已生成默认配置：%s\n", configFile)
+	}
+	if err := helpers.InitConfig(); err != nil {
+		log.Fatal("加载配置失败:", err)
+	}
+	// ======================
+
 	initLogger()
 	// 启动数据库
 	if err := QMSApp.StartDatabase(false); err != nil {
