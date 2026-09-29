@@ -6,9 +6,6 @@ import (
 )
 
 func Register(r *gin.Engine, db *gorm.DB) error {
-	if err := AutoMigrate(db); err != nil {
-		return err
-	}
 	ctrl := NewController(db)
 	g := r.Group("/api/avscrape")
 	{
