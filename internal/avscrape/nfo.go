@@ -75,6 +75,7 @@ func GenerateNFO(r *ScrapeResult) string {
 	sb.WriteString("</movie>\n")
 	return sb.String()
 }
+
 func MediaFromResult(r *ScrapeResult) *AVMedia {
 	if r == nil {
 		return nil
@@ -84,12 +85,25 @@ func MediaFromResult(r *ScrapeResult) *AVMedia {
 	previews, _ := json.Marshal(r.PreviewImages)
 	urls, _ := json.Marshal(r.Urls)
 	return &AVMedia{
-		Code: r.Code, Title: r.Title, OriginalTitle: r.OriginalTitle,
-		Plot: r.Plot, Runtime: r.Runtime, ReleaseDate: r.ReleaseDate,
-		Director: r.Director, Studio: r.Studio, Label: r.Label, Series: r.Series,
-		Genres: string(genres), Actors: string(actors), Poster: r.Poster,
-		Fanart: r.Fanart, PreviewImages: string(previews), Trailer: r.Trailer,
-		Rating: r.Rating, Urls: string(urls), NFOContent: GenerateNFO(r), Source: r.Source,
+		Code:          r.Code,
+		Title:         r.Title,
+		OriginalTitle: r.OriginalTitle,
+		Plot:          r.Plot,
+		Runtime:       r.Runtime,
+		ReleaseDate:   r.ReleaseDate,
+		Director:      r.Director,
+		Studio:        r.Studio,
+		Label:         r.Label,
+		Series:        r.Series,
+		Genres:        string(genres),
+		Actors:        string(actors),
+		Poster:        r.Poster,
+		Fanart:        r.Fanart,
+		PreviewImages: string(previews),
+		Trailer:       r.Trailer,
+		Rating:        r.Rating,
+		Urls:          string(urls),
+		NFOContent:    GenerateNFO(r),
+		Source:        r.Source,
 	}
 }
-EOF
