@@ -1,5 +1,6 @@
-# 运行阶段
-FROM --platform=linux/arm64 qicfan/qms-build-base:latest
+# 运行阶段：用 TARGETPLATFORM 让 buildx 自动匹配目标架构
+FROM --platform=$TARGETPLATFORM qicfan/qms-build-base:latest
+
 # 设置时区
 ENV TZ=Asia/Shanghai
 ENV PATH=/app:$PATH
@@ -20,8 +21,9 @@ RUN mkdir -p /dev/shm && chmod 1777 /dev/shm
 # 设置工作目录
 WORKDIR /app
 
-# 直接复制 workflow 编译好的 arm64 二进制
-COPY QMediaSync .
+# 根据目标架构复制对应的二进制
+ARG TARGETARCH
+COPY build/${TARGETARCH}/QMediaSync .
 COPY web_statics ./web_statics/
 COPY scripts ./scripts/
 
