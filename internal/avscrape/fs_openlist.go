@@ -18,7 +18,7 @@ type FSOpenList struct {
 	ctx    context.Context
 }
 
-func NewFSOpenList(p *AVPath) (*FSOpenList, error) {
+func NewFSOpenList(p *models.AVPath) (*FSOpenList, error) {
 	account, err := models.GetAccountById(p.AccountID)
 	if err != nil {
 		return nil, fmt.Errorf("获取账号失败: %w", err)
