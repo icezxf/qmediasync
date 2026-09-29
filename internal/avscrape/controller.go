@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"path/filepath"
 	"strconv"
-	"strings"
 
 	"Q115-STRM/internal/helpers"
 	"Q115-STRM/internal/models"
@@ -149,7 +148,6 @@ func (c *Controller) DeletePath(ctx *gin.Context) {
 }
 
 // ScanPath POST /api/avscrape/paths/:id/scan
-// ScanPath POST /api/avscrape/paths/:id/scan
 func (c *Controller) ScanPath(ctx *gin.Context) {
 	id, _ := strconv.Atoi(ctx.Param("id"))
 
@@ -167,30 +165,23 @@ func (c *Controller) ScanPath(ctx *gin.Context) {
 		return
 	}
 
-	// 1. 同步创建文件系统
 	fs, err := NewFileSystem(&p)
 	if err != nil {
 		ctx.JSON(http.StatusBadRequest, gin.H{"error": "创建文件系统失败: " + err.Error()})
 		return
 	}
 
-	// 2. 同步列目录（用于诊断）
-	files, err := fs.List(p.SourcePath)
+	// 递归统计
+	videoFiles, err := walkVideos(fs, p.SourcePath, 0)
 	if err != nil {
-		ctx.JSON(http.StatusBadRequest, gin.H{"error": "列出源目录失败: " + err.Error()})
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": "遍历源目录失败: " + err.Error()})
 		return
 	}
 
-	// 3. 统计
-	videoCount := 0
 	recognizedCount := 0
 	unknownSamples := []string{}
-	for _, name := range files {
-		ext := strings.ToLower(filepath.Ext(name))
-		if !videoExts[ext] {
-			continue
-		}
-		videoCount++
+	for _, fullPath := range videoFiles {
+		name := filepath.Base(fullPath)
 		if ExtractCode(name) != "" {
 			recognizedCount++
 		} else if len(unknownSamples) < 5 {
@@ -198,20 +189,22 @@ func (c *Controller) ScanPath(ctx *gin.Context) {
 		}
 	}
 
-	helpers.AppLogger.Infof("[AV扫描] 目录=%s 总文件=%d 视频=%d 可识别=%d",
-		p.SourcePath, len(files), videoCount, recognizedCount)
+	helpers.AppLogger.Infof("[AV扫描] 目录=%s 视频=%d 可识别=%d",
+		p.SourcePath, len(videoFiles), recognizedCount)
 
-	if videoCount == 0 {
-		ctx.JSON(http.StatusOK, gin.H{
-			"ok":          false,
-			"msg":         fmt.Sprintf("源目录下共 %d 个文件，但没有视频文件（mp4/mkv/avi 等）", len(files)),
-			"total_files": len(files),
-			"video_count": 0,
-		})
+	ctx.JSON(http.StatusOK, gin.H{
+		"ok":              true,
+		"msg":             fmt.Sprintf("目录 %s 共 %d 个视频，可识别番号 %d 个", p.SourcePath, len(videoFiles), recognizedCount),
+		"source_path":     p.SourcePath,
+		"video_count":     len(videoFiles),
+		"recognizable":    recognizedCount,
+		"unknown_samples": unknownSamples,
+	})
+
+	if len(videoFiles) == 0 {
 		return
 	}
 
-	// 4. 异步执行扫描
 	scanner := NewScanner(c.DB)
 	go func() {
 		defer func() {
@@ -229,19 +222,6 @@ func (c *Controller) ScanPath(ctx *gin.Context) {
 			})
 		}
 	}()
-
-	msg := fmt.Sprintf("扫描已启动：共 %d 个文件，%d 个视频，可识别番号 %d 个", len(files), videoCount, recognizedCount)
-	if len(unknownSamples) > 0 {
-		msg += fmt.Sprintf("；识别不出的示例：%s", strings.Join(unknownSamples, ", "))
-	}
-	ctx.JSON(http.StatusOK, gin.H{
-		"ok":            true,
-		"msg":           msg,
-		"total_files":   len(files),
-		"video_count":   videoCount,
-		"recognizable":  recognizedCount,
-		"unknown_samples": unknownSamples,
-	})
 }
 
 // ListTasks GET /api/avscrape/tasks
