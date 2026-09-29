@@ -64,7 +64,6 @@ func (app *App) Start() {
 	}
 	r := gin.New()
 	r.Use(controllers.Cors())
-	setRouter(r)
 
 	// ===== AV 刮削模块注册 =====
 	if err := avscrape.Register(r, db.Db); err != nil {
