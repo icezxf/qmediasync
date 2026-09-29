@@ -1,6 +1,7 @@
 package models
 
 import (
+	"Q115-STRM/internal/avscrape"
 	"Q115-STRM/internal/db"
 	"Q115-STRM/internal/helpers"
 	"Q115-STRM/internal/notification"
@@ -19,15 +20,18 @@ type Migrator struct {
 }
 
 var MaxVersionCode = 38
+
 var AllTables = []any{
-	BackupConfig{}, BackupRecord{},
-	ApiKey{}, Settings{}, Sync{}, User{}, Account{},
-	SyncPath{}, SyncFile{}, SyncPathScrapePath{},
-	ScrapeSettings{}, ScrapePath{}, MovieCategory{}, TvShowCategory{}, ScrapePathCategory{},
-	ScrapeMediaFile{}, Media{}, MediaSeason{}, MediaEpisode{}, ScrapeStrmPath{},
-	RequestStat{}, EmbyConfig{}, EmbyMediaItem{}, EmbyMediaSyncFile{}, EmbyLibrary{}, EmbyLibrarySyncPath{},
-	DbDownloadTask{}, DbUploadTask{}, NotificationChannel{}, TelegramChannelConfig{}, MeoWChannelConfig{}, BarkChannelConfig{},
-	ServerChanChannelConfig{}, CustomWebhookChannelConfig{}, NotificationRule{},
+	BackupConfig{}, BackupRecord{}, ApiKey{}, Settings{}, Sync{},
+	User{}, Account{}, SyncPath{}, SyncFile{}, SyncPathScrapePath{},
+	ScrapeSettings{}, ScrapePath{}, MovieCategory{}, TvShowCategory{},
+	ScrapePathCategory{}, ScrapeMediaFile{}, Media{}, MediaSeason{}, MediaEpisode{},
+	ScrapeStrmPath{}, RequestStat{}, EmbyConfig{}, EmbyMediaItem{},
+	EmbyMediaSyncFile{}, EmbyLibrary{}, EmbyLibrarySyncPath{}, DbDownloadTask{},
+	DbUploadTask{}, NotificationChannel{}, TelegramChannelConfig{},
+	MeoWChannelConfig{}, BarkChannelConfig{}, ServerChanChannelConfig{},
+	CustomWebhookChannelConfig{}, NotificationRule{},
+	avscrape.AVSettings{}, avscrape.AVTask{}, avscrape.AVMedia{}, avscrape.AVPath{},
 }
 
 func (*Migrator) TableName() string {
@@ -118,7 +122,6 @@ func Migrate() {
 						sm.MediaEpisode.VideoFileId = filepath.Join(sm.NewPathId, sm.NewVideoBaseName+sm.VideoExt)
 					}
 				}
-
 				sm.Media.PathId = sm.NewPathId
 				if sm.SourceType != SourceType115 {
 					sm.Media.Path = sm.NewPathId
@@ -166,7 +169,6 @@ func Migrate() {
 		} else {
 			helpers.AppLogger.Infof("所有刮削结果表的已刮削状态已从scraped更新为renamed")
 		}
-
 		migrator.UpdateVersionCode(db.Db)
 	}
 	if migrator.VersionCode == 5 {
@@ -179,10 +181,10 @@ func Migrate() {
 		db.Db.AutoMigrate(SyncPath{})
 		// 修改默认值
 		updates := map[string]interface{}{
-			"delete_dir":     -1,
-			"download_meta":  -1,
-			"upload_meta":    -1,
-			"min_video_size": -1,
+			"delete_dir":      -1,
+			"download_meta":   -1,
+			"upload_meta":     -1,
+			"min_video_size":  -1,
 		}
 		db.Db.Model(&SyncPath{}).Where("id > ?", 0).Updates(updates)
 		migrator.UpdateVersionCode(db.Db)
@@ -205,12 +207,8 @@ func Migrate() {
 	if migrator.VersionCode == 8 {
 		// 创建新的通知渠道表
 		db.Db.AutoMigrate(
-			&NotificationChannel{},
-			&TelegramChannelConfig{},
-			&MeoWChannelConfig{},
-			&BarkChannelConfig{},
-			&ServerChanChannelConfig{},
-			&NotificationRule{},
+			&NotificationChannel{}, &TelegramChannelConfig{}, &MeoWChannelConfig{},
+			&BarkChannelConfig{}, &ServerChanChannelConfig{}, &NotificationRule{},
 		)
 		// 迁移现有的Telegram设置到新表
 		migrateExistingNotificationSettings(db.Db)
@@ -232,7 +230,7 @@ func Migrate() {
 		// accounts := []Account{}
 		// db.Db.Find(&accounts)
 		// for _, account := range accounts {
-		// appIdName := "自定义"
+		// 	appIdName := "自定义"
 		// 	switch account.AppId {
 		// 	case helpers.GlobalConfig.Open115AppId:
 		// 		appIdName = "Q115-STRM"
@@ -247,8 +245,8 @@ func Migrate() {
 	if migrator.VersionCode == 12 {
 		// 备份相关表 + Emby同步相关表
 		db.Db.AutoMigrate(
-			BackupConfig{}, BackupRecord{},
-			EmbyConfig{}, EmbyMediaItem{}, EmbyMediaSyncFile{}, EmbyLibrary{}, EmbyLibrarySyncPath{},
+			BackupConfig{}, BackupRecord{}, EmbyConfig{}, EmbyMediaItem{},
+			EmbyMediaSyncFile{}, EmbyLibrary{}, EmbyLibrarySyncPath{},
 		)
 		migrateEmbyConfig(db.Db)
 		migrator.UpdateVersionCode(db.Db)
@@ -281,7 +279,8 @@ func Migrate() {
 		migrator.UpdateVersionCode(db.Db)
 	}
 	if migrator.VersionCode == 17 {
-		migrator.UpdateVersionCode(db.Db) // 增加到18
+		migrator.UpdateVersionCode(db.Db)
+		// 增加到18
 	}
 	if migrator.VersionCode == 18 {
 		// 给User表添加IsAdmin字段
@@ -299,7 +298,8 @@ func Migrate() {
 		migrator.UpdateVersionCode(db.Db)
 	}
 	if migrator.VersionCode == 21 {
-		db.Db.AutoMigrate(Settings{}) // 增加openlist限速新字段
+		db.Db.AutoMigrate(Settings{})
+		// 增加openlist限速新字段
 		// 给新字段添加默认值
 		updateData := make(map[string]interface{})
 		// 将下载QPS默认改为1，防止限流
@@ -335,13 +335,13 @@ func Migrate() {
 		db.Db.AutoMigrate(BackupConfig{}, BackupRecord{})
 		// 插入默认配置
 		db.Db.Save(&BackupConfig{
-			BaseModel:       BaseModel{ID: 1},
-			BackupEnabled:   0,
-			BackupPath:      "backups",
-			BackupRetention: 7,
-			BackupMaxCount:  7,
-			BackupCompress:  1,
-			BackupCron:      "0 2 * * *",
+			BaseModel:        BaseModel{ID: 1},
+			BackupEnabled:    0,
+			BackupPath:       "backups",
+			BackupRetention:  7,
+			BackupMaxCount:   7,
+			BackupCompress:   1,
+			BackupCron:       "0 2 * * *",
 		})
 		migrator.UpdateVersionCode(db.Db)
 	}
@@ -424,10 +424,8 @@ func Migrate() {
 		migrator.UpdateVersionCode(db.Db)
 	}
 	if migrator.VersionCode == 35 {
-
 		// 添加Emby媒体库选择字段到EmbyConfig表
 		db.Db.AutoMigrate(EmbyConfig{})
-
 		// 清理重复的 ScrapeSettings 记录
 		var count int64
 		db.Db.Model(&ScrapeSettings{}).Count(&count)
@@ -447,7 +445,6 @@ func Migrate() {
 			helpers.AppLogger.Warnf("数据库中没有刮削设置记录，将创建默认记录")
 			InitScrapeSetting()
 		}
-
 		migrator.UpdateVersionCode(db.Db)
 	}
 	if migrator.VersionCode == 36 {
@@ -462,7 +459,6 @@ func Migrate() {
 		helpers.AppLogger.Info("已添加enable_playback_overview和enable_playback_progress字段到emby_config表")
 		migrator.UpdateVersionCode(db.Db)
 	}
-
 	if migrator.VersionCode == 38 {
 		// 添加刮削失败通知类型到emby_config表
 		addNewNotificationRulesForExistingChannels(db.Db)
@@ -475,7 +471,6 @@ func Migrate() {
 // 重建不存在的表，然后修复主键
 func BatchCreateTable() error {
 	db.Db.Statement.PrepareStmt = true
-
 	var err error
 	var lastErr error
 	for _, table := range AllTables {
@@ -489,7 +484,8 @@ func BatchCreateTable() error {
 
 func InitMigrationTable(version int) {
 	var migrator Migrator = Migrator{}
-	migrator = Migrator{BaseModel: BaseModel{ID: 1}, VersionCode: version} // 初始版本为version
+	migrator = Migrator{BaseModel: BaseModel{ID: 1}, VersionCode: version}
+	// 初始版本为version
 	db.Db.Save(&migrator)
 	helpers.AppLogger.Infof("初始化数据库版本表，当前版本为%d", version)
 }
@@ -546,10 +542,10 @@ func InitSettings() {
 			StrmBaseUrl:  fmt.Sprintf("http://%s:12333", ipv4),
 		},
 		SettingThreads: SettingThreads{
-			DownloadThreads:    1,
-			FileDetailThreads:  3,
-			OpenlistQPS:        3,
-			OpenlistRetry:      1,
+			DownloadThreads:   1,
+			FileDetailThreads: 3,
+			OpenlistQPS:       3,
+			OpenlistRetry:     1,
 			OpenlistRetryDelay: 60,
 		},
 	}
@@ -558,7 +554,6 @@ func InitSettings() {
 }
 
 func InitUser() {
-
 	defaultUser := User{
 		// 设置默认值
 		Username: helpers.GlobalConfig.AdminUsername,
@@ -587,7 +582,6 @@ func InitScrapeSetting() {
 		helpers.AppLogger.Info("刮削设置已存在，跳过初始化")
 		return
 	}
-
 	// 添加默认值
 	scrapeSettings := ScrapeSettings{
 		TmdbApiKey:      "",
@@ -602,9 +596,9 @@ func InitScrapeSetting() {
 	helpers.AppLogger.Info("已默认添加刮削设置")
 	// 外语电影分类（ID为1，不可删除）
 	waiyuDianying := MovieCategory{
-		Name:     "外语电影",
-		GenreIds: "[]",
-		Language: "[]",
+		Name:      "外语电影",
+		GenreIds:  "[]",
+		Language:  "[]",
 	}
 	if err := db.Db.Save(&waiyuDianying).Error; err != nil {
 		helpers.AppLogger.Errorf("添加外语电影分类失败：%v", err)
@@ -725,20 +719,19 @@ func InitScrapeSetting() {
 
 func InitEmbyConfig() {
 	embyConfig := &EmbyConfig{
-		EmbyUrl:                 "",
-		EmbyApiKey:              "",
-		SyncEnabled:             0,
-		SyncCron:                "0 * * * *",
-		EnableDeleteNetdisk:     0,
-		EnableRefreshLibrary:    0,
+		EmbyUrl:                "",
+		EmbyApiKey:             "",
+		SyncEnabled:            0,
+		SyncCron:               "0 * * * *",
+		EnableDeleteNetdisk:    0,
+		EnableRefreshLibrary:   0,
 		EnableMediaNotification: 0,
-		EnableExtractMediaInfo:  0,
-		EnableAuth:              0,
-		LastSyncTime:            0,
+		EnableExtractMediaInfo: 0,
+		EnableAuth:             0,
+		LastSyncTime:           0,
 	}
 	db.Db.Save(embyConfig)
 	helpers.AppLogger.Info("已默认添加Emby配置")
-
 }
 
 func migrateEmbyConfig(dbConn *gorm.DB) {
@@ -767,7 +760,6 @@ func migrateExistingNotificationSettings(dbConn *gorm.DB) {
 	if err := dbConn.First(&settings).Error; err != nil {
 		return
 	}
-
 	// 如果存在Telegram配置，创建新的记录
 	if settings.UseTelegram == 1 && settings.TelegramBotToken != "" {
 		channel := NotificationChannel{
@@ -783,7 +775,6 @@ func migrateExistingNotificationSettings(dbConn *gorm.DB) {
 				ProxyURL:  settings.HttpProxy,
 			}
 			dbConn.Create(&config)
-
 			// 创建默认规则（所有事件都发送到此渠道）
 			for _, eventType := range notification.AllNotificationTypes {
 				rule := NotificationRule{
@@ -796,7 +787,6 @@ func migrateExistingNotificationSettings(dbConn *gorm.DB) {
 			helpers.AppLogger.Infof("已迁移Telegram通知配置到新表")
 		}
 	}
-
 	// 如果存在MeoW配置，创建新的记录
 	if settings.MeoWName != "" {
 		channel := NotificationChannel{
@@ -811,7 +801,6 @@ func migrateExistingNotificationSettings(dbConn *gorm.DB) {
 				Endpoint:  "http://api.chuckfang.com",
 			}
 			dbConn.Create(&config)
-
 			// 创建默认规则
 			for _, eventType := range notification.AllNotificationTypes {
 				rule := NotificationRule{
@@ -835,22 +824,18 @@ func addNewNotificationRulesForExistingChannels(dbConn *gorm.DB) {
 		notification.PlaybackStop,
 		notification.ScrapeError,
 	}
-
 	// 获取所有已有的通知渠道
 	var channels []NotificationChannel
 	if err := dbConn.Find(&channels).Error; err != nil {
 		helpers.AppLogger.Errorf("获取通知渠道失败：%v", err)
 		return
 	}
-
 	addedCount := 0
 	for _, channel := range channels {
 		for _, eventType := range newPlaybackTypes {
 			// 检查规则是否已存在
 			var existingRule NotificationRule
-			err := dbConn.Where("channel_id = ? AND event_type = ?", channel.ID, string(eventType)).
-				First(&existingRule).Error
-
+			err := dbConn.Where("channel_id = ? AND event_type = ?", channel.ID, string(eventType)).First(&existingRule).Error
 			if err == gorm.ErrRecordNotFound {
 				// 规则不存在，创建新规则
 				newRule := NotificationRule{
@@ -867,7 +852,6 @@ func addNewNotificationRulesForExistingChannels(dbConn *gorm.DB) {
 			}
 		}
 	}
-
 	helpers.AppLogger.Infof("数据库迁移完成：已为 %d 个渠道添加新的播放通知类型规则", addedCount)
 }
 
