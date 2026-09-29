@@ -1,7 +1,6 @@
 package models
 
 import (
-	"Q115-STRM/internal/avscrape"
 	"Q115-STRM/internal/db"
 	"Q115-STRM/internal/helpers"
 	"Q115-STRM/internal/notification"
@@ -31,7 +30,7 @@ var AllTables = []any{
 	DbUploadTask{}, NotificationChannel{}, TelegramChannelConfig{},
 	MeoWChannelConfig{}, BarkChannelConfig{}, ServerChanChannelConfig{},
 	CustomWebhookChannelConfig{}, NotificationRule{},
-	avscrape.AVSettings{}, avscrape.AVTask{}, avscrape.AVMedia{}, avscrape.AVPath{},
+	avscrape.AVSettings{}, avscrape.AVTask{}, avscrape.AVMedia{}, avscrape.AVPath{},AVSettings{}, AVTask{}, AVMedia{}, AVPath{},
 }
 
 func (*Migrator) TableName() string {
