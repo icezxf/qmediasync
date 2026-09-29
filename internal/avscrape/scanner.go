@@ -1,6 +1,7 @@
 package avscrape
 
 import (
+	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -140,10 +141,18 @@ func (s *Scanner) writeMediaFiles(fs FileSystem, path *models.AVPath, r *ScrapeR
 
 // organize 按命名模板整理文件到目标路径
 func (s *Scanner) organize(fs FileSystem, path *models.AVPath, media *models.AVMedia, videoPath, videoName string) error {
-	targetDir := path.TargetPath + "/" + media.Code
+	// 渲染模板，得到相对路径（可能含多级目录）
+	relDir := renderTemplate(path.NameTemplate, media)
+	if relDir == "" {
+		relDir = media.Code
+	}
+	// 拼接最终目录
+	targetDir := path.TargetPath + "/" + relDir
+
 	if err := fs.MkdirAll(targetDir); err != nil {
 		return err
 	}
+
 	ext := filepath.Ext(videoName)
 	newName := media.Code + ext
 
@@ -171,4 +180,85 @@ func (s *Scanner) recordTask(code, filePath, status, msg, provider string) {
 		Message:  msg,
 		Provider: provider,
 	})
+}
+
+// renderTemplate 渲染命名模板
+// 支持变量：{actor} {actors} {number} {code} {title} {year} {studio} {label} {series} {director}
+// 最终返回相对路径，如 "河北彩花/SNOS-377"
+func renderTemplate(tpl string, media *models.AVMedia) string {
+	if tpl == "" {
+		return media.Code
+	}
+
+	// 提取演员
+	firstActor := ""
+	allActors := ""
+	var actors []Actor
+	if media.Actors != "" {
+		_ = json.Unmarshal([]byte(media.Actors), &actors)
+	}
+	for i, a := range actors {
+		if a.Name == "" {
+			continue
+		}
+		if firstActor == "" {
+			firstActor = a.Name
+		}
+		if i > 0 {
+			allActors += ", "
+		}
+		allActors += a.Name
+	}
+
+	// 替换变量
+	replacer := strings.NewReplacer(
+		"{actor}", sanitizePath(firstActor),
+		"{actors}", sanitizePath(allActors),
+		"{number}", sanitizePath(media.Code),
+		"{code}", sanitizePath(media.Code),
+		"{title}", sanitizePath(media.Title),
+		"{year}", extractYear(media.ReleaseDate),
+		"{studio}", sanitizePath(media.Studio),
+		"{label}", sanitizePath(media.Label),
+		"{series}", sanitizePath(media.Series),
+		"{director}", sanitizePath(media.Director),
+	)
+
+	result := replacer.Replace(tpl)
+
+	// 清理首尾斜杠和连续斜杠
+	result = strings.Trim(result, "/")
+	for strings.Contains(result, "//") {
+		result = strings.ReplaceAll(result, "//", "/")
+	}
+	// 清理每一段的空白
+	parts := strings.Split(result, "/")
+	cleaned := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			cleaned = append(cleaned, p)
+		}
+	}
+	return strings.Join(cleaned, "/")
+}
+
+// sanitizePath 去掉路径里不允许的字符
+func sanitizePath(s string) string {
+	if s == "" {
+		return ""
+	}
+	replacer := strings.NewReplacer(
+		"/", "_", "\\", "_", ":", "：", "*", "_",
+		"?", "？", "\"", "'", "<", "《", ">", "》", "|", "_",
+	)
+	return strings.TrimSpace(replacer.Replace(s))
+}
+
+// extractYear 从日期字符串里取年份，如 "2026-09-22" → "2026"
+func extractYear(date string) string {
+	if len(date) >= 4 {
+		return date[:4]
+	}
+	return ""
 }
