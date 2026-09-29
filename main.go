@@ -172,11 +172,6 @@ func (app *App) StartDatabase(migrateMode bool) error {
 		helpers.AppLogger.Infof("sqlite数据库文件路径：%s", sqliteFile)
 		db.Db = db.InitSqlite3(sqliteFile)
 		models.Migrate()
-		// ===== AV 表迁移 =====
-		if err := avscrape.AutoMigrate(db.Db); err != nil {
-			return err
-		}
-		// =====================
 		return nil
 	}
 
@@ -226,11 +221,6 @@ func (app *App) StartDatabase(migrateMode bool) error {
 		}
 	}
 	models.Migrate()
-	// ===== AV 表迁移 =====
-	if err := avscrape.AutoMigrate(db.Db); err != nil {
-		return err
-	}
-	// =====================
 	return nil
 }
 
