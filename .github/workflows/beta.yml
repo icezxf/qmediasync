@@ -36,11 +36,8 @@ jobs:
           npm install
           npm run type-check
           npx vite build --mode=production --emptyOutDir --outDir dist
-          mkdir -p $GITHUB_WORKSPACE/web_statics
           rm -rf $GITHUB_WORKSPACE/web_statics/*
           cp -r dist/* $GITHUB_WORKSPACE/web_statics/
-          echo "=== web_statics 内容 ==="
-          ls -la $GITHUB_WORKSPACE/web_statics/
       # ====================
 
       # ===== 编译两个架构的 Go 二进制 =====
