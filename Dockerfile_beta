@@ -4,12 +4,6 @@ FROM --platform=$TARGETPLATFORM qicfan/qms-build-base:latest
 # 设置时区
 ENV TZ=Asia/Shanghai
 ENV PATH=/app:$PATH
-ENV DB_HOST=localhost
-ENV DB_PORT=5432
-ENV DB_USER=qms
-ENV DB_PASSWORD=qms123456
-ENV DB_NAME=qms
-ENV DB_SSLMODE=disable
 
 # 添加用户和组
 RUN addgroup -g 12331 qms && \
