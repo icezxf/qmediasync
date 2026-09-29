@@ -13,14 +13,50 @@ jobs:
       - name: Get current time
         id: time
         run: echo "date=$(date +'%Y-%m-%dT%H:%M:%S')" >> $GITHUB_OUTPUT
+
       - uses: actions/checkout@v3
         with:
           fetch-depth: 0
       - run: git fetch --force --tags
+
       - uses: actions/setup-go@v4
         with:
           go-version: stable
-      - name: Build Go binary
+
+      # ===== 编译前端 =====
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Build Frontend
+        run: |
+          git clone --depth 1 https://github.com/icezxf/q115-strm-frontend.git /tmp/frontend
+          cd /tmp/frontend
+          npm install
+          npm run build
+          rm -rf $GITHUB_WORKSPACE/web_statics/*
+          cp -r dist/* $GITHUB_WORKSPACE/web_statics/
+      # ====================
+
+      # ===== 编译两个架构的 Go 二进制 =====
+      - name: Build Go binary (amd64)
+        env:
+          APP_VERSION: ${{ github.ref_name }}.${{ steps.time.outputs.date }}
+          PUBLISH_DATE: ${{ steps.time.outputs.date }}
+          FANART_API_KEY: ${{ secrets.FANART_API_KEY }}
+          DEFAULT_TMDB_ACCESS_TOKEN: ${{ secrets.DEFAULT_TMDB_ACCESS_TOKEN }}
+          DEFAULT_TMDB_API_KEY: ${{ secrets.DEFAULT_TMDB_API_KEY }}
+          DEFAULT_SC_API_KEY: ${{ secrets.DEFAULT_SC_API_KEY }}
+          ENCRYPTION_KEY: ${{ secrets.ENCRYPTION_KEY }}
+          GOOS: linux
+          GOARCH: amd64
+        run: |
+          go mod tidy
+          mkdir -p build/amd64
+          CGO_ENABLED=0 go build -ldflags="-s -w -X 'main.Version=${APP_VERSION}' -X 'main.PublishDate=${PUBLISH_DATE}' -X main.FANART_API_KEY=${FANART_API_KEY} -X main.DEFAULT_TMDB_ACCESS_TOKEN=${DEFAULT_TMDB_ACCESS_TOKEN} -X main.DEFAULT_TMDB_API_KEY=${DEFAULT_TMDB_API_KEY} -X main.DEFAULT_SC_API_KEY=${DEFAULT_SC_API_KEY} -X main.ENCRYPTION_KEY=${ENCRYPTION_KEY}" -o build/amd64/QMediaSync .
+
+      - name: Build Go binary (arm64)
         env:
           APP_VERSION: ${{ github.ref_name }}.${{ steps.time.outputs.date }}
           PUBLISH_DATE: ${{ steps.time.outputs.date }}
@@ -32,24 +68,29 @@ jobs:
           GOOS: linux
           GOARCH: arm64
         run: |
-          go mod tidy
-          CGO_ENABLED=0 go build -ldflags="-s -w -X 'main.Version=${APP_VERSION}' -X 'main.PublishDate=${PUBLISH_DATE}' -X main.FANART_API_KEY=${FANART_API_KEY} -X main.DEFAULT_TMDB_ACCESS_TOKEN=${DEFAULT_TMDB_ACCESS_TOKEN} -X main.DEFAULT_TMDB_API_KEY=${DEFAULT_TMDB_API_KEY} -X main.DEFAULT_SC_API_KEY=${DEFAULT_SC_API_KEY} -X main.ENCRYPTION_KEY=${ENCRYPTION_KEY}" -o QMediaSync .
+          mkdir -p build/arm64
+          CGO_ENABLED=0 go build -ldflags="-s -w -X 'main.Version=${APP_VERSION}' -X 'main.PublishDate=${PUBLISH_DATE}' -X main.FANART_API_KEY=${FANART_API_KEY} -X main.DEFAULT_TMDB_ACCESS_TOKEN=${DEFAULT_TMDB_ACCESS_TOKEN} -X main.DEFAULT_TMDB_API_KEY=${DEFAULT_TMDB_API_KEY} -X main.DEFAULT_SC_API_KEY=${DEFAULT_SC_API_KEY} -X main.ENCRYPTION_KEY=${ENCRYPTION_KEY}" -o build/arm64/QMediaSync .
+      # ==================================
+
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v2
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v2
+
       - name: Login to DockerHub
         uses: docker/login-action@v2
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
-      - name: Build and push
+
+      - name: Build and push (multi-platform)
         uses: docker/build-push-action@v4
         with:
           context: .
           push: true
           tags: ${{ secrets.DOCKER_USERNAME }}/qmediasync:beta
           file: Dockerfile_beta
-          platforms: linux/arm64
+          platforms: linux/amd64,linux/arm64
           secrets: |
             GITHUB_TOKEN=${{ secrets.RELEASE_TOKEN }}
