@@ -29,8 +29,7 @@ var AllTables = []any{
 	EmbyMediaSyncFile{}, EmbyLibrary{}, EmbyLibrarySyncPath{}, DbDownloadTask{},
 	DbUploadTask{}, NotificationChannel{}, TelegramChannelConfig{},
 	MeoWChannelConfig{}, BarkChannelConfig{}, ServerChanChannelConfig{},
-	CustomWebhookChannelConfig{}, NotificationRule{},
-	avscrape.AVSettings{}, avscrape.AVTask{}, avscrape.AVMedia{}, avscrape.AVPath{},AVSettings{}, AVTask{}, AVMedia{}, AVPath{},
+	CustomWebhookChannelConfig{}, NotificationRule{},AVSettings{}, AVTask{}, AVMedia{}, AVPath{},
 }
 
 func (*Migrator) TableName() string {
