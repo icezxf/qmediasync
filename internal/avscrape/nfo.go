@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"Q115-STRM/internal/models"
 )
 
 func GenerateNFO(r *ScrapeResult) string {
@@ -76,7 +78,7 @@ func GenerateNFO(r *ScrapeResult) string {
 	return sb.String()
 }
 
-func MediaFromResult(r *ScrapeResult) *AVMedia {
+func MediaFromResult(r *ScrapeResult) *models.AVMedia {
 	if r == nil {
 		return nil
 	}
@@ -84,7 +86,7 @@ func MediaFromResult(r *ScrapeResult) *AVMedia {
 	actors, _ := json.Marshal(r.Actors)
 	previews, _ := json.Marshal(r.PreviewImages)
 	urls, _ := json.Marshal(r.Urls)
-	return &AVMedia{
+	return &models.AVMedia{
 		Code:          r.Code,
 		Title:         r.Title,
 		OriginalTitle: r.OriginalTitle,
