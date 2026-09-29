@@ -66,11 +66,11 @@ func (app *App) Start() {
 	r.Use(controllers.Cors())
 	setRouter(r)
 
-	// ===== 新增：注册 AV 刮削模块 =====
+	// ===== AV 刮削模块注册 =====
 	if err := avscrape.Register(r, db.Db); err != nil {
 		log.Fatal("AV 刮削模块注册失败:", err)
 	}
-	// ==================================
+	// ==========================
 
 	app.StartHttpServer(r)
 	app.StartHttpsServer(r)
@@ -179,11 +179,11 @@ func (app *App) StartDatabase(migrateMode bool) error {
 		helpers.AppLogger.Infof("sqlite数据库文件路径：%s", sqliteFile)
 		db.Db = db.InitSqlite3(sqliteFile)
 		models.Migrate()
-		// ===== 新增：迁移 AV 刮削模块的表 =====
+		// ===== AV 表迁移 =====
 		if err := avscrape.AutoMigrate(db.Db); err != nil {
 			return err
 		}
-		// =====================================
+		// =====================
 		return nil
 	}
 
@@ -233,11 +233,11 @@ func (app *App) StartDatabase(migrateMode bool) error {
 		}
 	}
 	models.Migrate()
-	// ===== 新增：迁移 AV 刮削模块的表 =====
+	// ===== AV 表迁移 =====
 	if err := avscrape.AutoMigrate(db.Db); err != nil {
 		return err
 	}
-	// =====================================
+	// =====================
 	return nil
 }
 
