@@ -1,8 +1,11 @@
 package avscrape
 
 import (
+	"fmt"
 	"net/http"
+	"path/filepath"
 	"strconv"
+	"strings"
 
 	"Q115-STRM/internal/helpers"
 	"Q115-STRM/internal/models"
@@ -146,15 +149,99 @@ func (c *Controller) DeletePath(ctx *gin.Context) {
 }
 
 // ScanPath POST /api/avscrape/paths/:id/scan
+// ScanPath POST /api/avscrape/paths/:id/scan
 func (c *Controller) ScanPath(ctx *gin.Context) {
 	id, _ := strconv.Atoi(ctx.Param("id"))
+
+	var p models.AVPath
+	if err := c.DB.First(&p, id).Error; err != nil {
+		ctx.JSON(http.StatusNotFound, gin.H{"error": "AV 刮削目录不存在"})
+		return
+	}
+	if !p.Enable {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": "该目录未启用，请先编辑并开启「启用」开关"})
+		return
+	}
+	if p.SourcePath == "" {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": "源路径为空，请先编辑目录并填写源路径"})
+		return
+	}
+
+	// 1. 同步创建文件系统
+	fs, err := NewFileSystem(&p)
+	if err != nil {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": "创建文件系统失败: " + err.Error()})
+		return
+	}
+
+	// 2. 同步列目录（用于诊断）
+	files, err := fs.List(p.SourcePath)
+	if err != nil {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": "列出源目录失败: " + err.Error()})
+		return
+	}
+
+	// 3. 统计
+	videoCount := 0
+	recognizedCount := 0
+	unknownSamples := []string{}
+	for _, name := range files {
+		ext := strings.ToLower(filepath.Ext(name))
+		if !videoExts[ext] {
+			continue
+		}
+		videoCount++
+		if ExtractCode(name) != "" {
+			recognizedCount++
+		} else if len(unknownSamples) < 5 {
+			unknownSamples = append(unknownSamples, name)
+		}
+	}
+
+	helpers.AppLogger.Infof("[AV扫描] 目录=%s 总文件=%d 视频=%d 可识别=%d",
+		p.SourcePath, len(files), videoCount, recognizedCount)
+
+	if videoCount == 0 {
+		ctx.JSON(http.StatusOK, gin.H{
+			"ok":          false,
+			"msg":         fmt.Sprintf("源目录下共 %d 个文件，但没有视频文件（mp4/mkv/avi 等）", len(files)),
+			"total_files": len(files),
+			"video_count": 0,
+		})
+		return
+	}
+
+	// 4. 异步执行扫描
 	scanner := NewScanner(c.DB)
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				helpers.AppLogger.Errorf("[AV扫描] panic: %v", r)
+			}
+		}()
 		if err := scanner.Scan(uint(id)); err != nil {
-			helpers.AppLogger.Errorf("AV 扫描失败: %v", err)
+			helpers.AppLogger.Errorf("[AV扫描] 失败: %v", err)
+			c.DB.Create(&models.AVTask{
+				Code:     "",
+				FilePath: p.SourcePath,
+				Status:   "failed",
+				Message:  "扫描失败: " + err.Error(),
+			})
 		}
 	}()
-	ctx.JSON(http.StatusOK, gin.H{"ok": true, "msg": "扫描已启动"})
+
+	msg := fmt.Sprintf("扫描已启动：共 %d 个文件，%d 个视频，可识别番号 %d 个", len(files), videoCount, recognizedCount)
+	if len(unknownSamples) > 0 {
+		msg += fmt.Sprintf("；识别不出的示例：%s", strings.Join(unknownSamples, ", "))
+	}
+	ctx.JSON(http.StatusOK, gin.H{
+		"ok":            true,
+		"msg":           msg,
+		"total_files":   len(files),
+		"video_count":   videoCount,
+		"recognizable":  recognizedCount,
+		"unknown_samples": unknownSamples,
+	})
 }
 
 // ListTasks GET /api/avscrape/tasks
