@@ -34,7 +34,8 @@ jobs:
           git clone --depth 1 https://github.com/icezxf/q115-strm-frontend.git /tmp/frontend
           cd /tmp/frontend
           npm install
-          npm run build
+          npm run type-check
+          npx vite build --mode=production --emptyOutDir --outDir dist
           rm -rf $GITHUB_WORKSPACE/web_statics/*
           cp -r dist/* $GITHUB_WORKSPACE/web_statics/
       # ====================
