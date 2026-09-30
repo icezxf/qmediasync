@@ -1,9 +1,14 @@
 package avscrape
 
 import (
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"sort"
 	"strings"
+	"sync"
+	"time"
 
 	"Q115-STRM/internal/helpers"
 	"Q115-STRM/internal/models"
@@ -59,7 +64,18 @@ func (s *Service) Scrape(code string) (*ScrapeResult, error) {
 
 	best := mergeResults(allResults, cfg)
 
-	// 翻译：只要开关打开就翻，不做任何条件判断
+	// ===== JavDB 评分 =====
+	if cfg.EnableJavDBRating {
+		if rating, votes, err := GetJavDBRating(cfg.JavDBEndpoint, code); err == nil && rating > 0 {
+			best.Rating = rating
+			best.Votes = votes
+			helpers.AppLogger.Infof("[AV刮削] JavDB 评分: %.2f (%d人)", rating, votes)
+		} else if err != nil {
+			helpers.AppLogger.Warnf("[AV刮削] JavDB 评分获取失败: %v", err)
+		}
+	}
+
+	// ===== 翻译 =====
 	if cfg.EnableTranslate {
 		tr := NewTranslator(cfg.TranslateEngine, cfg.TranslateTarget)
 		tr.DeepLKey = cfg.TranslateDeepLKey
@@ -71,7 +87,7 @@ func (s *Service) Scrape(code string) (*ScrapeResult, error) {
 
 	media := MediaFromResult(best)
 
-	// Upsert：有就更新，没有就插入
+	// Upsert
 	var existing models.AVMedia
 	err = s.DB.Where("code = ?", media.Code).First(&existing).Error
 	if err == nil {
@@ -88,13 +104,101 @@ func (s *Service) Scrape(code string) (*ScrapeResult, error) {
 	return best, nil
 }
 
-// mergeResults 合并多个源的结果
+// =====================================================================
+// JavDB 评分
+// =====================================================================
+
+var javdbHTTPClient = &http.Client{Timeout: 20 * time.Second}
+var javdbLastReq time.Time
+var javdbMu sync.Mutex
+
+// GetJavDBRating 通过配置的 JavDB API 端点获取评分
+// 内置 15 秒限速，防触发 JavDB 的 CD
+func GetJavDBRating(endpoint, code string) (float64, int, error) {
+	if endpoint == "" {
+		return 0, 0, fmt.Errorf("JavDB endpoint 未配置")
+	}
+
+	// 限速：两次请求间隔至少 15 秒
+	javdbMu.Lock()
+	elapsed := time.Since(javdbLastReq)
+	if elapsed < 15*time.Second {
+		wait := 15*time.Second - elapsed
+		helpers.AppLogger.Infof("[JavDB] 限速等待 %.1f 秒", wait.Seconds())
+		time.Sleep(wait)
+	}
+	javdbLastReq = time.Now()
+	javdbMu.Unlock()
+
+	u := strings.TrimRight(endpoint, "/") + "/api/v1/movies/search?q=" + code
+	req, _ := http.NewRequest("GET", u, nil)
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36")
+
+	resp, err := javdbHTTPClient.Do(req)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != http.StatusOK {
+		return 0, 0, fmt.Errorf("JavDB HTTP %d", resp.StatusCode)
+	}
+
+	// 兼容几种常见返回格式
+	var result struct {
+		Data []struct {
+			Number       string `json:"number"`
+			Rate         string `json:"rate"`
+			CommentCount string `json:"comment_count"`
+			Score        string `json:"score"`
+			Votes        int    `json:"votes"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return 0, 0, fmt.Errorf("JavDB 解析失败: %w", err)
+	}
+	if len(result.Data) == 0 {
+		return 0, 0, fmt.Errorf("JavDB 无结果")
+	}
+
+	d := result.Data[0]
+
+	// 5 分制 → 10 分制
+	var raw float64
+	if d.Rate != "" {
+		fmt.Sscanf(d.Rate, "%f", &raw)
+	} else if d.Score != "" {
+		fmt.Sscanf(d.Score, "%f", &raw)
+	}
+	var votes int
+	if d.CommentCount != "" {
+		fmt.Sscanf(d.CommentCount, "%d", &votes)
+	} else {
+		votes = d.Votes
+	}
+
+	if raw <= 0 {
+		return 0, 0, fmt.Errorf("JavDB 无评分")
+	}
+
+	// 判定是 5 分制还是 10 分制：<=5 视为 5 分制，×2
+	rating := raw
+	if raw <= 5.0 {
+		rating = raw * 2
+	}
+	return rating, votes, nil
+}
+
+// =====================================================================
+// 合并多源
+// =====================================================================
+
 func mergeResults(results []*ScrapeResult, cfg *Config) *ScrapeResult {
 	sorted := sortByChinese(results, cfg.PreferChineseSource)
 	best := *sorted[0]
 	best.ImageCandidates = []string{}
 
-	// 收集所有图片到统一候选池，按优先级排序
 	type candidate struct {
 		url      string
 		priority int
@@ -122,7 +226,6 @@ func mergeResults(results []*ScrapeResult, cfg *Config) *ScrapeResult {
 		}
 	}
 
-	// 合并其他字段
 	for _, r := range sorted[1:] {
 		if best.Plot == "" && r.Plot != "" {
 			best.Plot = r.Plot
@@ -145,6 +248,9 @@ func mergeResults(results []*ScrapeResult, cfg *Config) *ScrapeResult {
 		if best.Rating == 0 && r.Rating > 0 {
 			best.Rating = r.Rating
 		}
+		if best.Votes == 0 && r.Votes > 0 {
+			best.Votes = r.Votes
+		}
 		if best.Runtime == 0 && r.Runtime > 0 {
 			best.Runtime = r.Runtime
 		}
@@ -155,7 +261,6 @@ func mergeResults(results []*ScrapeResult, cfg *Config) *ScrapeResult {
 			best.Trailer = r.Trailer
 		}
 
-		// 剧照合并去重
 		for _, img := range r.PreviewImages {
 			exists := false
 			for _, bi := range best.PreviewImages {
@@ -169,7 +274,6 @@ func mergeResults(results []*ScrapeResult, cfg *Config) *ScrapeResult {
 			}
 		}
 
-		// 演员合并：按名字 + aliases 交叉匹配去重
 		for _, a := range r.Actors {
 			found := false
 			for i := range best.Actors {
@@ -207,7 +311,6 @@ func mergeResults(results []*ScrapeResult, cfg *Config) *ScrapeResult {
 			}
 		}
 
-		// 标签合并去重
 		for _, g := range r.Genres {
 			exists := false
 			for _, bg := range best.Genres {
@@ -221,7 +324,6 @@ func mergeResults(results []*ScrapeResult, cfg *Config) *ScrapeResult {
 			}
 		}
 
-		// URL 合并去重
 		for _, u := range r.Urls {
 			exists := false
 			for _, bu := range best.Urls {
@@ -239,7 +341,6 @@ func mergeResults(results []*ScrapeResult, cfg *Config) *ScrapeResult {
 	return &best
 }
 
-// aliasMatch 检查两个演员是否通过 aliases 交叉匹配为同一人
 func aliasMatch(a, b Actor) bool {
 	for _, alias := range a.Aliases {
 		if alias == b.Name {
@@ -263,7 +364,6 @@ func aliasMatch(a, b Actor) bool {
 	return false
 }
 
-// sourceImagePriority 图片来源优先级，数字越小越优先
 func sourceImagePriority(source string) int {
 	switch {
 	case strings.HasPrefix(source, "javstash"):
@@ -281,7 +381,6 @@ func sourceImagePriority(source string) int {
 	}
 }
 
-// sortByChinese 有中文优先，其次按完整度
 func sortByChinese(results []*ScrapeResult, preferChinese bool) []*ScrapeResult {
 	sorted := make([]*ScrapeResult, len(results))
 	copy(sorted, results)
