@@ -116,17 +116,18 @@ func (j *JavStashClient) Search(code string) ([]*ScrapeResult, error) {
 		for _, t := range item.Tags {
 			r.Genres = append(r.Genres, t.Name)
 		}
+		// JavStash 的 images[0] 通常是横版，作为 fanart 候选
 		if len(item.Images) > 0 {
-			r.Poster = item.Images[0].URL
+			r.Fanart = item.Images[0].URL
 		}
 		for _, p := range item.Performers {
 			a := Actor{
 				Name:    p.Performer.Name,
+				Aliases: p.Performer.Aliases,
 				Country: p.Performer.Country,
 				Height:  p.Performer.Height,
 			}
-			// ===== 关键：从 aliases 里找中文名 =====
-			// 优先级：别名中的中文 > 原名（如果原名本身是中文）
+			// 从 aliases 里找中文名
 			for _, alias := range p.Performer.Aliases {
 				if containsChinese(alias) {
 					a.Name = alias
