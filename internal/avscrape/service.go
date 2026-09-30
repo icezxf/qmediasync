@@ -63,10 +63,13 @@ func (s *Service) Scrape(code string) (*ScrapeResult, error) {
 		needTranslate := !containsChinese(best.Title) || !containsChinese(best.Plot)
 		if needTranslate {
 			tr := NewTranslator(cfg.TranslateEngine, cfg.TranslateTarget)
+			tr.DeepLKey = cfg.TranslateDeepLKey
 			tr.BingKey = cfg.TranslateBingKey
 			tr.BingRegion = cfg.TranslateBingRegion
 			helpers.AppLogger.Infof("[AV刮削] 开始翻译 %s (engine=%s)", code, cfg.TranslateEngine)
 			tr.TranslateResult(best)
+		} else {
+			helpers.AppLogger.Infof("[AV刮削] %s 标题或简介已是中文，跳过翻译", code)
 		}
 	}
 
