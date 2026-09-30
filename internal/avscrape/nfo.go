@@ -4,10 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
-
-	"Q115-STRM/internal/models"
 )
 
+// GenerateNFO 根据 ScrapeResult 生成 NFO 文本
 func GenerateNFO(r *ScrapeResult) string {
 	if r == nil {
 		return ""
@@ -15,24 +14,42 @@ func GenerateNFO(r *ScrapeResult) string {
 	var sb strings.Builder
 	sb.WriteString(`<?xml version="1.0" encoding="UTF-8" ?>` + "\n")
 	sb.WriteString("<movie>\n")
+
+	// 基础字段
 	sb.WriteString(fmt.Sprintf("  <title><![CDATA[%s]]></title>\n", r.Title))
-	sb.WriteString(fmt.Sprintf("  <originaltitle><![CDATA[%s]]></originaltitle>\n", r.OriginalTitle))
+	if r.OriginalTitle != "" {
+		sb.WriteString(fmt.Sprintf("  <originaltitle><![CDATA[%s]]></originaltitle>\n", r.OriginalTitle))
+	} else {
+		sb.WriteString(fmt.Sprintf("  <originaltitle><![CDATA[%s]]></originaltitle>\n", r.Title))
+	}
 	sb.WriteString(fmt.Sprintf("  <sorttitle><![CDATA[%s]]></sorttitle>\n", r.Code))
 	sb.WriteString(fmt.Sprintf("  <num>%s</num>\n", r.Code))
 	sb.WriteString(fmt.Sprintf("  <uniqueid type=\"num\" default=\"true\">%s</uniqueid>\n", r.Code))
-	if r.Plot != "" {
-		sb.WriteString(fmt.Sprintf("  <plot><![CDATA[%s]]></plot>\n", r.Plot))
-	}
-	if r.Runtime > 0 {
-		sb.WriteString(fmt.Sprintf("  <runtime>%d</runtime>\n", r.Runtime))
-	}
+
+	// 发行日期相关
 	if r.ReleaseDate != "" {
 		sb.WriteString(fmt.Sprintf("  <premiered>%s</premiered>\n", r.ReleaseDate))
 		sb.WriteString(fmt.Sprintf("  <releasedate>%s</releasedate>\n", r.ReleaseDate))
+		sb.WriteString(fmt.Sprintf("  <year>%s</year>\n", extractYear(r.ReleaseDate)))
 	}
+
+	// 时长
+	if r.Runtime > 0 {
+		sb.WriteString(fmt.Sprintf("  <runtime>%d</runtime>\n", r.Runtime))
+	}
+
+	// 剧情简介
+	if r.Plot != "" {
+		sb.WriteString(fmt.Sprintf("  <plot><![CDATA[%s]]></plot>\n", r.Plot))
+		sb.WriteString(fmt.Sprintf("  <outline><![CDATA[%s]]></outline>\n", r.Plot))
+	}
+
+	// 导演
 	if r.Director != "" {
 		sb.WriteString(fmt.Sprintf("  <director><![CDATA[%s]]></director>\n", r.Director))
 	}
+
+	// 片商 / 厂牌 / 系列
 	if r.Studio != "" {
 		sb.WriteString(fmt.Sprintf("  <studio><![CDATA[%s]]></studio>\n", r.Studio))
 	}
@@ -42,23 +59,35 @@ func GenerateNFO(r *ScrapeResult) string {
 	if r.Series != "" {
 		sb.WriteString(fmt.Sprintf("  <series><![CDATA[%s]]></series>\n", r.Series))
 	}
+
+	// 评分
 	if r.Rating > 0 {
 		sb.WriteString(fmt.Sprintf("  <rating>%.2f</rating>\n", r.Rating))
+		sb.WriteString("  <votes>0</votes>\n")
 	}
+
+	// 图片：海报 / 封面 / 缩略图 / 背景图
 	if r.Poster != "" {
 		sb.WriteString(fmt.Sprintf("  <poster>%s</poster>\n", r.Poster))
 		sb.WriteString(fmt.Sprintf("  <cover>%s</cover>\n", r.Poster))
+		sb.WriteString(fmt.Sprintf("  <thumb>%s</thumb>\n", r.Poster))
 	}
 	if r.Fanart != "" {
 		sb.WriteString(fmt.Sprintf("  <fanart>%s</fanart>\n", r.Fanart))
 	}
+
+	// 预告片
 	if r.Trailer != "" {
 		sb.WriteString(fmt.Sprintf("  <trailer>%s</trailer>\n", r.Trailer))
 	}
+
+	// 标签
 	for _, g := range r.Genres {
 		sb.WriteString(fmt.Sprintf("  <genre><![CDATA[%s]]></genre>\n", g))
 		sb.WriteString(fmt.Sprintf("  <tag><![CDATA[%s]]></tag>\n", g))
 	}
+
+	// 演员
 	for _, a := range r.Actors {
 		sb.WriteString("  <actor>\n")
 		sb.WriteString(fmt.Sprintf("    <name><![CDATA[%s]]></name>\n", a.Name))
@@ -66,18 +95,41 @@ func GenerateNFO(r *ScrapeResult) string {
 		if a.Role != "" {
 			sb.WriteString(fmt.Sprintf("    <role><![CDATA[%s]]></role>\n", a.Role))
 		}
-		if a.Image != "" {
-			sb.WriteString(fmt.Sprintf("    <thumb>%s</thumb>\n", a.Image))
+		// 演员头像：优先 Image，其次 Thumb
+		actorImg := a.Image
+		if actorImg == "" {
+			actorImg = a.Thumb
+		}
+		if actorImg != "" {
+			sb.WriteString(fmt.Sprintf("    <thumb>%s</thumb>\n", actorImg))
+		}
+		// 演员资料页
+		if a.Name != "" {
+			profileURL := fmt.Sprintf("https://javstash.org/performers?q=%s", a.Name)
+			sb.WriteString(fmt.Sprintf("    <profile>%s</profile>\n", profileURL))
 		}
 		sb.WriteString("  </actor>\n")
 	}
+
+	// 外部链接
 	for _, u := range r.Urls {
 		sb.WriteString(fmt.Sprintf("  <website>%s</website>\n", u))
 	}
+
 	sb.WriteString("</movie>\n")
 	return sb.String()
 }
 
+// extractYear 从日期字符串里提取年份
+// 支持 "2022-09-16" 和 "2022-09-16T00:00:00Z" 两种格式
+func extractYear(date string) string {
+	if len(date) >= 4 {
+		return date[:4]
+	}
+	return ""
+}
+
+// MediaFromResult 把 ScrapeResult 转成 AVMedia 入库
 func MediaFromResult(r *ScrapeResult) *models.AVMedia {
 	if r == nil {
 		return nil
@@ -86,6 +138,7 @@ func MediaFromResult(r *ScrapeResult) *models.AVMedia {
 	actors, _ := json.Marshal(r.Actors)
 	previews, _ := json.Marshal(r.PreviewImages)
 	urls, _ := json.Marshal(r.Urls)
+
 	return &models.AVMedia{
 		Code:          r.Code,
 		Title:         r.Title,
@@ -107,5 +160,6 @@ func MediaFromResult(r *ScrapeResult) *models.AVMedia {
 		Urls:          string(urls),
 		NFOContent:    GenerateNFO(r),
 		Source:        r.Source,
+		Translated:    r.HasChinese,
 	}
 }
