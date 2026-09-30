@@ -7,7 +7,6 @@ import (
 	"Q115-STRM/internal/models"
 )
 
-// FileEntry 文件条目
 type FileEntry struct {
 	Name     string
 	Path     string
@@ -18,7 +17,6 @@ type FileEntry struct {
 	MTime    time.Time
 }
 
-// FileSystem 文件系统抽象接口
 type FileSystem interface {
 	List(path string) ([]string, error)
 	ListDetailed(path string) ([]FileEntry, error)
@@ -33,9 +31,9 @@ type FileSystem interface {
 	DeleteDir(path string) error
 	Download(remotePath, localPath string) error
 	Upload(localPath, remotePath string) error
+	GetURL(path string) (string, error) // 获取直链（用于 ffprobe）
 }
 
-// NewFileSystem 根据 AVPath 的 SourceType 创建对应实现
 func NewFileSystem(p *models.AVPath) (FileSystem, error) {
 	switch p.SourceType {
 	case "115":
