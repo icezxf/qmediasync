@@ -146,7 +146,6 @@ func (s *Scanner) writeMediaFiles(fs FileSystem, path *models.AVPath, r *ScrapeR
 		posterOK = true
 	}
 	if !posterOK {
-		// 用番号拼 DMM URL 再试
 		if dmmURL := dmmPosterURL(r.Code); dmmURL != "" {
 			if tryDMMPoster(fs, dmmURL, dir+"/poster.jpg") {
 				r.Poster = dmmURL
@@ -165,6 +164,15 @@ func (s *Scanner) writeMediaFiles(fs FileSystem, path *models.AVPath, r *ScrapeR
 	} else {
 		helpers.AppLogger.Warnf("[AV元数据] %s 未找到横版 fanart，跳过", r.Code)
 		r.Fanart = ""
+	}
+
+	// ===== 2.5 thumb：用 fanart 复制一份（横版缩略图）=====
+	if r.Fanart != "" {
+		if data, err := downloadImage(r.Fanart); err == nil {
+			if err := fs.Write(dir+"/thumb.jpg", data); err == nil {
+				helpers.AppLogger.Infof("[AV元数据] thumb 使用 fanart 生成: %s", r.Fanart)
+			}
+		}
 	}
 
 	// ===== 3. 写 NFO =====
@@ -191,10 +199,7 @@ func (s *Scanner) writeMediaFiles(fs FileSystem, path *models.AVPath, r *ScrapeR
 }
 
 // dmmPosterURL 根据番号拼 DMM 竖版海报 URL
-// 规则：字母前缀小写 + 数字补齐 5 位，例如 MIDV-192 → midv00192
-// 返回空字符串表示无法拼接（FC2、1Pondo 等特殊番号）
 func dmmPosterURL(code string) string {
-	// 只保留字母数字
 	var sb strings.Builder
 	for _, r := range code {
 		if (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
@@ -203,7 +208,6 @@ func dmmPosterURL(code string) string {
 	}
 	cleaned := strings.ToUpper(sb.String())
 
-	// 分离字母前缀和数字后缀
 	i := 0
 	for i < len(cleaned) && cleaned[i] >= 'A' && cleaned[i] <= 'Z' {
 		i++
@@ -211,7 +215,6 @@ func dmmPosterURL(code string) string {
 	letters := cleaned[:i]
 	digits := cleaned[i:]
 
-	// 无字母（如 1Pondo）或数字超过 5 位（如 FC2-PPV-1234567）都跳过
 	if letters == "" || digits == "" || len(digits) > 5 {
 		return ""
 	}
@@ -252,7 +255,6 @@ func tryDMMPoster(fs FileSystem, url, dstPath string) bool {
 		return false
 	}
 
-	// 验证是竖版图
 	cfg, _, err := image.DecodeConfig(bytes.NewReader(data))
 	if err != nil {
 		helpers.AppLogger.Warnf("[AV元数据] DMM poster 不是图片: %v", err)
@@ -284,7 +286,7 @@ func downloadImageWithSize(url string) ([]byte, int, int, error) {
 	return data, cfg.Width, cfg.Height, nil
 }
 
-// downloadImageByOrientation 严格按方向下载图片，不匹配就跳过
+// downloadImageByOrientation 严格按方向下载图片
 func downloadImageByOrientation(fs FileSystem, candidates []string, dstPath, wantOrientation, label string) (string, bool) {
 	for i, url := range candidates {
 		data, w, h, err := downloadImageWithSize(url)
