@@ -18,6 +18,11 @@ RUN id qms
 RUN echo 'qms ALL=(ALL) NOPASSWD: ALL' >> /etc/sudoers
 RUN mkdir -p /dev/shm && chmod 1777 /dev/shm
 
+# 安装中文字体（水印需要）和 ffmpeg（读取分辨率需要）
+RUN apk add --no-cache \
+    font-noto-cjk \
+    ffmpeg
+
 # 设置工作目录
 WORKDIR /app
 
