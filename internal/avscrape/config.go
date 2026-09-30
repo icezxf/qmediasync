@@ -16,11 +16,13 @@ type Config struct {
 	JavStashEndpoint    string `json:"javstash_endpoint"`
 	JavStashAPIKey      string `json:"javstash_api_key"`
 	EnableTranslate     bool   `json:"enable_translate"`
-	TranslateEngine     string `json:"translate_engine"`       // deepl / google_free / bing / mymemory
-	TranslateTarget     string `json:"translate_target"`       // zh
-	TranslateDeepLKey   string `json:"translate_deepl_key"`    // DeepL API Key（免费版以 :fx 结尾）
+	TranslateEngine     string `json:"translate_engine"`
+	TranslateTarget     string `json:"translate_target"`
+	TranslateDeepLKey   string `json:"translate_deepl_key"`
 	TranslateBingKey    string `json:"translate_bing_key"`
 	TranslateBingRegion string `json:"translate_bing_region"`
+	EnableJavDBRating   bool   `json:"enable_javdb_rating"` // 是否用 JavDB 评分
+	JavDBEndpoint       string `json:"javdb_endpoint"`      // JavDB 非官方 API 地址
 	PreferChineseSource bool   `json:"prefer_chinese_source"`
 }
 
@@ -32,6 +34,7 @@ var defaultConfig = Config{
 	EnableTranslate:     false,
 	TranslateEngine:     "deepl",
 	TranslateTarget:     "zh",
+	EnableJavDBRating:   false,
 	PreferChineseSource: true,
 }
 
