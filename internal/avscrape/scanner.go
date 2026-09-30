@@ -61,25 +61,38 @@ func (s *Scanner) Scan(pathID uint) error {
 		}
 		helpers.AppLogger.Infof("[AV扫描] 处理文件 %s → 番号 %s", fullPath, code)
 
-		// ===== 无条件重新刮削 =====
-		// 只要文件还在源目录里，不管数据库有没有，都重新刮一遍
+		// 1. 刮削（无条件重新刮）
 		result, err := s.Svc.Scrape(code)
 		if err != nil {
 			s.recordTask(code, fullPath, "failed", err.Error(), "")
 			continue
 		}
 
-		// 写 NFO + 下载图片
-		if err := s.writeMediaFiles(fs, &path, result, fullPath); err != nil {
+		// 2. 用命名模板计算目标子目录，例如 {actor}/{number} → 新有菜/MIDV-192
+		subDir := renderNameTemplate(path.NameTemplate, result, code)
+		targetDir := path.TargetPath
+		if subDir != "" {
+			targetDir = path.TargetPath + "/" + subDir
+		}
+		helpers.AppLogger.Infof("[AV扫描] 目标目录: %s", targetDir)
+
+		// 3. 创建目标目录
+		if err := fs.MkdirAll(targetDir); err != nil {
+			s.recordTask(code, fullPath, "failed", "创建目标目录失败: "+err.Error(), result.Source)
+			continue
+		}
+
+		// 4. 元数据（NFO/图片/剧照/预告片）全部写到目标目录
+		if err := s.writeMediaFiles(fs, targetDir, result); err != nil {
 			s.recordTask(code, fullPath, "failed", err.Error(), result.Source)
 			continue
 		}
 
-		// 整理文件
+		// 5. 移动视频文件到目标目录
 		if path.Mode == "scrape_and_rename" || path.Mode == "rename_only" {
-			media := MediaFromResult(result)
-			if err := s.organize(fs, &path, media, fullPath, name); err != nil {
-				s.recordTask(code, fullPath, "failed", err.Error(), result.Source)
+			newName := code + ext
+			if err := fs.Move(fullPath, targetDir, newName); err != nil {
+				s.recordTask(code, fullPath, "failed", "移动视频失败: "+err.Error(), result.Source)
 				continue
 			}
 		}
@@ -91,47 +104,128 @@ func (s *Scanner) Scan(pathID uint) error {
 	return nil
 }
 
-// writeMediaFiles 写 NFO、下载图片、生成 .strm 预告片
-func (s *Scanner) writeMediaFiles(fs FileSystem, path *models.AVPath, r *ScrapeResult, videoPath string) error {
-	dir := filepath.Dir(videoPath)
-	base := strings.TrimSuffix(filepath.Base(videoPath), filepath.Ext(videoPath))
+// renderNameTemplate 解析命名模板，把 {actor}、{number} 等变量替换为实际值
+func renderNameTemplate(tmpl string, r *ScrapeResult, code string) string {
+	if tmpl == "" {
+		return code
+	}
+	out := tmpl
 
+	// {actor} 首个演员
+	actor := ""
+	if len(r.Actors) > 0 {
+		actor = r.Actors[0].Name
+	}
+	out = strings.ReplaceAll(out, "{actor}", sanitizePath(actor))
+
+	// {actors} 全部演员（逗号分隔）
+	var actorNames []string
+	for _, a := range r.Actors {
+		if a.Name != "" {
+			actorNames = append(actorNames, a.Name)
+		}
+	}
+	out = strings.ReplaceAll(out, "{actors}", sanitizePath(strings.Join(actorNames, ", ")))
+
+	// {number} 番号
+	out = strings.ReplaceAll(out, "{number}", code)
+
+	// {title} 标题
+	out = strings.ReplaceAll(out, "{title}", sanitizePath(r.Title))
+
+	// {year} 年份
+	year := ""
+	if len(r.ReleaseDate) >= 4 {
+		year = r.ReleaseDate[:4]
+	}
+	out = strings.ReplaceAll(out, "{year}", year)
+
+	// {studio} 片商
+	out = strings.ReplaceAll(out, "{studio}", sanitizePath(r.Studio))
+
+	// {label} 厂牌
+	out = strings.ReplaceAll(out, "{label}", sanitizePath(r.Label))
+
+	// {series} 系列
+	out = strings.ReplaceAll(out, "{series}", sanitizePath(r.Series))
+
+	// 清理多余的斜杠
+	out = strings.Trim(out, "/")
+	for strings.Contains(out, "//") {
+		out = strings.ReplaceAll(out, "//", "/")
+	}
+	return out
+}
+
+// sanitizePath 去掉文件名/目录名里不能用的字符
+func sanitizePath(s string) string {
+	if s == "" {
+		return ""
+	}
+	// Windows + Linux 都不允许的字符
+	replacer := strings.NewReplacer(
+		"/", "_",
+		"\\", "_",
+		":", "_",
+		"*", "_",
+		"?", "_",
+		"\"", "_",
+		"<", "_",
+		">", "_",
+		"|", "_",
+	)
+	s = replacer.Replace(s)
+	s = strings.TrimSpace(s)
+	return s
+}
+
+// writeMediaFiles 把 NFO、海报、背景图、缩略图、剧照、预告片全部写到目标目录
+func (s *Scanner) writeMediaFiles(fs FileSystem, targetDir string, r *ScrapeResult) error {
 	// 1. 写 NFO
-	if err := fs.Write(dir+"/"+base+".nfo", []byte(GenerateNFO(r))); err != nil {
+	nfoPath := targetDir + "/" + r.Code + ".nfo"
+	if err := fs.Write(nfoPath, []byte(GenerateNFO(r))); err != nil {
 		return fmt.Errorf("写 NFO 失败: %w", err)
 	}
+	helpers.AppLogger.Infof("[AV元数据] NFO 写入: %s", nfoPath)
 
-	// 2. 海报（多源 fallback，JavStash 优先）
-	if !downloadFirstSuccess(fs, r.PosterCandidates, dir+"/poster.jpg", "poster") {
+	// 2. 海报（JavStash 优先，失败 fallback）
+	if !downloadFirstSuccess(fs, r.PosterCandidates, targetDir+"/poster.jpg", "poster") {
 		helpers.AppLogger.Warnf("[AV元数据] %s 所有源的 poster 都下载失败", r.Code)
 	}
 
-	// 3. 背景图（多源 fallback）
-	if !downloadFirstSuccess(fs, r.FanartCandidates, dir+"/fanart.jpg", "fanart") {
-		if len(r.PreviewImages) > 0 {
-			if data, err := downloadImage(r.PreviewImages[0]); err == nil {
-				_ = fs.Write(dir+"/fanart.jpg", data)
-				helpers.AppLogger.Infof("[AV元数据] %s 使用剧照第一张作为 fanart", r.Code)
-			}
-		}
+	// 3. 缩略图（用 poster 的候选，内容相同）
+	if !downloadFirstSuccess(fs, r.PosterCandidates, targetDir+"/thumb.jpg", "thumb") {
+		helpers.AppLogger.Warnf("[AV元数据] %s 所有源的 thumb 都下载失败", r.Code)
 	}
 
-	// 4. 剧照
+	// 4. 背景图（仅用真实 fanart，不再用剧照拼接）
+	if len(r.FanartCandidates) > 0 {
+		if !downloadFirstSuccess(fs, r.FanartCandidates, targetDir+"/fanart.jpg", "fanart") {
+			helpers.AppLogger.Warnf("[AV元数据] %s 所有源的 fanart 都下载失败", r.Code)
+		}
+	} else {
+		helpers.AppLogger.Infof("[AV元数据] %s 没有 fanart 来源，跳过", r.Code)
+	}
+
+	// 5. 剧照
 	if len(r.PreviewImages) > 0 {
-		_ = fs.MkdirAll(dir + "/extrafanart")
+		_ = fs.MkdirAll(targetDir + "/extrafanart")
+		okCount := 0
 		for i, url := range r.PreviewImages {
 			if data, err := downloadImage(url); err == nil {
-				_ = fs.Write(fmt.Sprintf("%s/extrafanart/scene-%02d.jpg", dir, i+1), data)
+				_ = fs.Write(fmt.Sprintf("%s/extrafanart/scene-%02d.jpg", targetDir, i+1), data)
+				okCount++
 			} else {
 				helpers.AppLogger.Warnf("[AV元数据] 剧照 %s 下载失败: %v", url, err)
 			}
 		}
+		helpers.AppLogger.Infof("[AV元数据] %s 剧照 %d/%d 张下载完成", r.Code, okCount, len(r.PreviewImages))
 	}
 
-	// 5. 预告片
+	// 6. 预告片
 	if r.Trailer != "" {
-		_ = fs.MkdirAll(dir + "/trailers")
-		_ = fs.Write(dir+"/trailers/trailer.strm", []byte(r.Trailer))
+		_ = fs.MkdirAll(targetDir + "/trailers")
+		_ = fs.Write(targetDir+"/trailers/trailer.strm", []byte(r.Trailer))
 	}
 	return nil
 }
@@ -155,30 +249,6 @@ func downloadFirstSuccess(fs FileSystem, candidates []string, dstPath, label str
 		return true
 	}
 	return false
-}
-
-// organize 按命名模板整理文件到目标路径
-func (s *Scanner) organize(fs FileSystem, path *models.AVPath, media *models.AVMedia, videoPath, videoName string) error {
-	targetDir := path.TargetPath + "/" + media.Code
-	if err := fs.MkdirAll(targetDir); err != nil {
-		return err
-	}
-	ext := filepath.Ext(videoName)
-	newName := media.Code + ext
-
-	switch path.MoveMethod {
-	case "copy":
-		if err := fs.Copy(videoPath, targetDir); err != nil {
-			return err
-		}
-		if filepath.Base(videoPath) != newName {
-			newPath := targetDir + "/" + filepath.Base(videoPath)
-			return fs.Rename(newPath, newName)
-		}
-		return nil
-	default:
-		return fs.Move(videoPath, targetDir, newName)
-	}
 }
 
 func (s *Scanner) recordTask(code, filePath, status, msg, provider string) {
