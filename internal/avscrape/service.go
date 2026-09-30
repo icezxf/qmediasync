@@ -341,27 +341,38 @@ func mergeResults(results []*ScrapeResult, cfg *Config) *ScrapeResult {
 	return &best
 }
 
+func normalizeName(s string) string {
+    s = strings.TrimSpace(s)
+    s = strings.ReplaceAll(s, "　", " ") // 全角空格 → 半角
+    return strings.ToLower(s)
+}
+
 func aliasMatch(a, b Actor) bool {
-	for _, alias := range a.Aliases {
-		if alias == b.Name {
-			return true
-		}
-	}
-	for _, alias := range b.Aliases {
-		if alias == a.Name {
-			return true
-		}
-	}
-	if len(a.Aliases) > 0 && len(b.Aliases) > 0 {
-		for _, al := range a.Aliases {
-			for _, bl := range b.Aliases {
-				if al == bl {
-					return true
-				}
-			}
-		}
-	}
-	return false
+    an := normalizeName(a.Name)
+    bn := normalizeName(b.Name)
+    if an == bn {
+        return true
+    }
+    for _, alias := range a.Aliases {
+        if normalizeName(alias) == bn {
+            return true
+        }
+    }
+    for _, alias := range b.Aliases {
+        if normalizeName(alias) == an {
+            return true
+        }
+    }
+    if len(a.Aliases) > 0 && len(b.Aliases) > 0 {
+        for _, al := range a.Aliases {
+            for _, bl := range b.Aliases {
+                if normalizeName(al) == normalizeName(bl) {
+                    return true
+                }
+            }
+        }
+    }
+    return false
 }
 
 func sourceImagePriority(source string) int {
