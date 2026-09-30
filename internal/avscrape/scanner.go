@@ -8,8 +8,12 @@ import (
 	_ "image/gif"
 	_ "image/jpeg"
 	_ "image/png"
+	"io"
+	"net/http"
 	"path/filepath"
+	"regexp"
 	"strings"
+	"time"
 
 	"Q115-STRM/internal/helpers"
 	"Q115-STRM/internal/models"
@@ -22,6 +26,8 @@ var videoExts = map[string]bool{
 	".mov": true, ".flv": true, ".ts": true, ".m2ts": true,
 	".iso": true, ".rmvb": true, ".strm": true,
 }
+
+var invalidPathChars = regexp.MustCompile(`[\\/:*?"<>|]`)
 
 type Scanner struct {
 	DB  *gorm.DB
@@ -92,39 +98,40 @@ func (s *Scanner) Scan(pathID uint) error {
 	return nil
 }
 
-// renderFolderTemplate 根据模板生成目标子路径
-// 支持变量：{actors} {num} {code} {title} {year} {studio} {label} {series}
-// 模板可以包含 /，例如 "{actors}/{num}"
+// renderFolderTemplate 渲染文件夹模板
 func renderFolderTemplate(tpl string, m *models.AVMedia) string {
 	if tpl == "" {
 		tpl = "{code}"
 	}
 
-	// 解析演员
 	actorName := ""
 	if m.Actors != "" {
 		var list []Actor
 		if err := json.Unmarshal([]byte(m.Actors), &list); err == nil && len(list) > 0 {
-			actorName = list[0].Name // 取第一位演员
+			actorName = list[0].Name
 		}
 	}
 
-	// 年份
 	year := ""
 	if len(m.ReleaseDate) >= 4 {
 		year = m.ReleaseDate[:4]
 	}
 
-	result := tpl
-	result = strings.ReplaceAll(result, "{actors}", actorName)
-	result = strings.ReplaceAll(result, "{num}", m.Code)
-	result = strings.ReplaceAll(result, "{code}", m.Code)
-	result = strings.ReplaceAll(result, "{title}", m.Title)
-	result = strings.ReplaceAll(result, "{year}", year)
-	result = strings.ReplaceAll(result, "{studio}", m.Studio)
-	result = strings.ReplaceAll(result, "{label}", m.Label)
-	result = strings.ReplaceAll(result, "{series}", m.Series)
-	return result
+	r := tpl
+	r = strings.ReplaceAll(r, "{actors}", sanitizePathSegment(actorName))
+	r = strings.ReplaceAll(r, "{num}", sanitizePathSegment(m.Code))
+	r = strings.ReplaceAll(r, "{code}", sanitizePathSegment(m.Code))
+	r = strings.ReplaceAll(r, "{title}", sanitizePathSegment(m.Title))
+	r = strings.ReplaceAll(r, "{year}", sanitizePathSegment(year))
+	r = strings.ReplaceAll(r, "{studio}", sanitizePathSegment(m.Studio))
+	r = strings.ReplaceAll(r, "{label}", sanitizePathSegment(m.Label))
+	r = strings.ReplaceAll(r, "{series}", sanitizePathSegment(m.Series))
+	return r
+}
+
+func sanitizePathSegment(s string) string {
+	s = invalidPathChars.ReplaceAllString(s, "")
+	return strings.TrimSpace(s)
 }
 
 // writeMediaFiles 写 NFO、下载图片、生成 .strm 预告片
@@ -132,26 +139,40 @@ func (s *Scanner) writeMediaFiles(fs FileSystem, path *models.AVPath, r *ScrapeR
 	dir := filepath.Dir(videoPath)
 	base := strings.TrimSuffix(filepath.Base(videoPath), filepath.Ext(videoPath))
 
-	// 1. 海报：优先竖版；没有就用横版 fallback
+	// ===== 1. poster：严格只找竖版，找不到就用 DMM 兜底 =====
+	posterOK := false
 	if url, ok := downloadImageByOrientation(fs, r.ImageCandidates, dir+"/poster.jpg", "portrait", "poster"); ok {
 		r.Poster = url
-	} else {
-		helpers.AppLogger.Warnf("[AV元数据] %s poster 下载失败", r.Code)
+		posterOK = true
+	}
+	if !posterOK {
+		// 用番号拼 DMM URL 再试
+		if dmmURL := dmmPosterURL(r.Code); dmmURL != "" {
+			if tryDMMPoster(fs, dmmURL, dir+"/poster.jpg") {
+				r.Poster = dmmURL
+				posterOK = true
+			}
+		}
+	}
+	if !posterOK {
+		helpers.AppLogger.Warnf("[AV元数据] %s 未找到竖版 poster，跳过", r.Code)
+		r.Poster = ""
 	}
 
-	// 2. 背景图：优先横版；没有就用竖版 fallback
+	// ===== 2. fanart：严格只找横版 =====
 	if url, ok := downloadImageByOrientation(fs, r.ImageCandidates, dir+"/fanart.jpg", "landscape", "fanart"); ok {
 		r.Fanart = url
 	} else {
-		helpers.AppLogger.Warnf("[AV元数据] %s fanart 下载失败", r.Code)
+		helpers.AppLogger.Warnf("[AV元数据] %s 未找到横版 fanart，跳过", r.Code)
+		r.Fanart = ""
 	}
 
-	// 3. 写 NFO（此时 r.Poster / r.Fanart 已更新为实际使用的 URL）
+	// ===== 3. 写 NFO =====
 	if err := fs.Write(dir+"/"+base+".nfo", []byte(GenerateNFO(r))); err != nil {
 		return fmt.Errorf("写 NFO 失败: %w", err)
 	}
 
-	// 4. 剧照
+	// ===== 4. 剧照 =====
 	if len(r.PreviewImages) > 0 {
 		_ = fs.MkdirAll(dir + "/extrafanart")
 		for i, url := range r.PreviewImages {
@@ -161,12 +182,93 @@ func (s *Scanner) writeMediaFiles(fs FileSystem, path *models.AVPath, r *ScrapeR
 		}
 	}
 
-	// 5. 预告片
+	// ===== 5. 预告片 =====
 	if r.Trailer != "" {
 		_ = fs.MkdirAll(dir + "/trailers")
 		_ = fs.Write(dir+"/trailers/trailer.strm", []byte(r.Trailer))
 	}
 	return nil
+}
+
+// dmmPosterURL 根据番号拼 DMM 竖版海报 URL
+// 规则：字母前缀小写 + 数字补齐 5 位，例如 MIDV-192 → midv00192
+// 返回空字符串表示无法拼接（FC2、1Pondo 等特殊番号）
+func dmmPosterURL(code string) string {
+	// 只保留字母数字
+	var sb strings.Builder
+	for _, r := range code {
+		if (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			sb.WriteRune(r)
+		}
+	}
+	cleaned := strings.ToUpper(sb.String())
+
+	// 分离字母前缀和数字后缀
+	i := 0
+	for i < len(cleaned) && cleaned[i] >= 'A' && cleaned[i] <= 'Z' {
+		i++
+	}
+	letters := cleaned[:i]
+	digits := cleaned[i:]
+
+	// 无字母（如 1Pondo）或数字超过 5 位（如 FC2-PPV-1234567）都跳过
+	if letters == "" || digits == "" || len(digits) > 5 {
+		return ""
+	}
+
+	var num int
+	if _, err := fmt.Sscanf(digits, "%d", &num); err != nil {
+		return ""
+	}
+	filename := strings.ToLower(letters) + fmt.Sprintf("%05d", num)
+	return "https://pics.dmm.co.jp/digital/video/" + filename + "/" + filename + "pl.jpg"
+}
+
+// tryDMMPoster 尝试从 DMM 下载竖版海报
+func tryDMMPoster(fs FileSystem, url, dstPath string) bool {
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return false
+	}
+	req.Header.Set("Referer", "https://www.dmm.co.jp/")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36")
+
+	client := &http.Client{Timeout: 20 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		helpers.AppLogger.Warnf("[AV元数据] DMM poster 请求失败: %v", err)
+		return false
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		helpers.AppLogger.Warnf("[AV元数据] DMM poster HTTP %d", resp.StatusCode)
+		return false
+	}
+
+	data, err := io.ReadAll(resp.Body)
+	if err != nil || len(data) < 1000 {
+		helpers.AppLogger.Warnf("[AV元数据] DMM poster 数据无效（%d 字节）", len(data))
+		return false
+	}
+
+	// 验证是竖版图
+	cfg, _, err := image.DecodeConfig(bytes.NewReader(data))
+	if err != nil {
+		helpers.AppLogger.Warnf("[AV元数据] DMM poster 不是图片: %v", err)
+		return false
+	}
+	if cfg.Width >= cfg.Height {
+		helpers.AppLogger.Warnf("[AV元数据] DMM poster 不是竖版（%dx%d）", cfg.Width, cfg.Height)
+		return false
+	}
+
+	if err := fs.Write(dstPath, data); err != nil {
+		helpers.AppLogger.Warnf("[AV元数据] DMM poster 写盘失败: %v", err)
+		return false
+	}
+	helpers.AppLogger.Infof("[AV元数据] poster 从 DMM 下载成功（%dx%d）: %s", cfg.Width, cfg.Height, url)
+	return true
 }
 
 // downloadImageWithSize 下载图片并读取尺寸
@@ -182,15 +284,8 @@ func downloadImageWithSize(url string) ([]byte, int, int, error) {
 	return data, cfg.Width, cfg.Height, nil
 }
 
-// downloadImageByOrientation 按方向从候选池里下载图片
-// 找不到目标方向时用第一张已下载的兜底
+// downloadImageByOrientation 严格按方向下载图片，不匹配就跳过
 func downloadImageByOrientation(fs FileSystem, candidates []string, dstPath, wantOrientation, label string) (string, bool) {
-	if len(candidates) == 0 {
-		return "", false
-	}
-	var fallbackData []byte
-	var fallbackURL string
-
 	for i, url := range candidates {
 		data, w, h, err := downloadImageWithSize(url)
 		if err != nil {
@@ -198,46 +293,30 @@ func downloadImageByOrientation(fs FileSystem, candidates []string, dstPath, wan
 			continue
 		}
 		if w == 0 || h == 0 {
-			if fallbackData == nil {
-				fallbackData = data
-				fallbackURL = url
-			}
+			helpers.AppLogger.Warnf("[AV元数据] %s 候选[%d]尺寸未知，跳过", label, i)
 			continue
 		}
 		isPortrait := h > w
 		match := (wantOrientation == "portrait" && isPortrait) ||
 			(wantOrientation == "landscape" && !isPortrait)
-		if match {
-			if err := fs.Write(dstPath, data); err != nil {
-				helpers.AppLogger.Warnf("[AV元数据] %s 写盘失败: %v", label, err)
-				continue
-			}
-			helpers.AppLogger.Infof("[AV元数据] %s 下载成功（候选[%d]，%dx%d，%s）: %s", label, i, w, h, wantOrientation, url)
-			return url, true
+		if !match {
+			helpers.AppLogger.Infof("[AV元数据] %s 候选[%d]方向不匹配（%dx%d），跳过", label, i, w, h)
+			continue
 		}
-		// 方向不匹配，记为 fallback
-		if fallbackData == nil {
-			fallbackData = data
-			fallbackURL = url
-			helpers.AppLogger.Infof("[AV元数据] %s 候选[%d]方向不匹配（%dx%d），记为 fallback", label, i, w, h)
+		if err := fs.Write(dstPath, data); err != nil {
+			helpers.AppLogger.Warnf("[AV元数据] %s 写盘失败: %v", label, err)
+			continue
 		}
+		helpers.AppLogger.Infof("[AV元数据] %s 下载成功（候选[%d]，%dx%d）: %s", label, i, w, h, url)
+		return url, true
 	}
-
-	// 没找到目标方向，用 fallback 兜底
-	if fallbackData != nil {
-		if err := fs.Write(dstPath, fallbackData); err == nil {
-			helpers.AppLogger.Infof("[AV元数据] %s 未找到 %s 方向图，使用 fallback: %s", label, wantOrientation, fallbackURL)
-			return fallbackURL, true
-		}
-	}
+	helpers.AppLogger.Warnf("[AV元数据] %s 未找到 %s 方向的图片", label, wantOrientation)
 	return "", false
 }
 
-// organize 按命名模板整理文件到目标路径
+// organize 按模板整理文件到目标路径
 func (s *Scanner) organize(fs FileSystem, path *models.AVPath, media *models.AVMedia, videoPath, videoName string) error {
-	// ===== 1. 用模板生成目标子路径 =====
 	subPath := renderFolderTemplate(path.NameTemplate, media)
-	// 清理路径中可能出现的多余斜杠和空段
 	subPath = strings.Trim(subPath, "/")
 	for strings.Contains(subPath, "//") {
 		subPath = strings.ReplaceAll(subPath, "//", "/")
@@ -245,11 +324,11 @@ func (s *Scanner) organize(fs FileSystem, path *models.AVPath, media *models.AVM
 	if subPath == "" {
 		subPath = media.Code
 	}
-	targetDir := path.TargetPath + "/" + subPath
+	targetDir := strings.TrimRight(path.TargetPath, "/") + "/" + subPath
 	helpers.AppLogger.Infof("[AV整理] 目标目录: %s (模板=%s)", targetDir, path.NameTemplate)
 
 	if err := fs.MkdirAll(targetDir); err != nil {
-		return err
+		return fmt.Errorf("创建目标目录失败: %w", err)
 	}
 
 	ext := filepath.Ext(videoName)
@@ -257,25 +336,24 @@ func (s *Scanner) organize(fs FileSystem, path *models.AVPath, media *models.AVM
 	srcDir := filepath.Dir(videoPath)
 	base := strings.TrimSuffix(filepath.Base(videoPath), ext)
 
-	// ===== 2. 移动视频 =====
 	switch path.MoveMethod {
 	case "copy":
 		if err := fs.Copy(videoPath, targetDir); err != nil {
-			return err
+			return fmt.Errorf("复制视频失败: %w", err)
 		}
 		if filepath.Base(videoPath) != newName {
 			newPath := targetDir + "/" + filepath.Base(videoPath)
 			if err := fs.Rename(newPath, newName); err != nil {
-				return err
+				return fmt.Errorf("重命名视频失败: %w", err)
 			}
 		}
 	default:
 		if err := fs.Move(videoPath, targetDir, newName); err != nil {
-			return err
+			return fmt.Errorf("移动视频失败: %w", err)
 		}
 	}
+	helpers.AppLogger.Infof("[AV整理] 移动视频: %s → %s/", filepath.Base(videoPath), targetDir)
 
-	// ===== 3. 移动 NFO =====
 	nfoSrc := srcDir + "/" + base + ".nfo"
 	if fs.Exists(nfoSrc) {
 		if err := fs.Move(nfoSrc, targetDir, ""); err != nil {
@@ -285,51 +363,43 @@ func (s *Scanner) organize(fs FileSystem, path *models.AVPath, media *models.AVM
 		}
 	}
 
-	// ===== 4. 移动 poster / fanart / thumb =====
-	for _, imgName := range []string{"poster.jpg", "fanart.jpg", "thumb.jpg"} {
-		src := srcDir + "/" + imgName
+	for _, img := range []string{"poster.jpg", "fanart.jpg", "thumb.jpg"} {
+		src := srcDir + "/" + img
 		if fs.Exists(src) {
 			if err := fs.Move(src, targetDir, ""); err != nil {
-				helpers.AppLogger.Warnf("[AV整理] 移动 %s 失败: %v", imgName, err)
+				helpers.AppLogger.Warnf("[AV整理] 移动 %s 失败: %v", img, err)
 			} else {
-				helpers.AppLogger.Infof("[AV整理] 移动 %s → %s/", imgName, targetDir)
+				helpers.AppLogger.Infof("[AV整理] 移动 %s → %s/", img, targetDir)
 			}
 		}
 	}
 
-	// ===== 5. 移动 extrafanart 目录 =====
-	extraSrc := srcDir + "/extrafanart"
-	extraDst := targetDir + "/extrafanart"
-	if fs.Exists(extraSrc) {
-		if err := fs.MkdirAll(extraDst); err == nil {
-			names, _ := fs.List(extraSrc)
-			for _, n := range names {
-				if err := fs.Move(extraSrc+"/"+n, extraDst, ""); err != nil {
-					helpers.AppLogger.Warnf("[AV整理] 移动 extrafanart/%s 失败: %v", n, err)
-				}
-			}
-			_ = fs.DeleteDir(extraSrc)
-			helpers.AppLogger.Infof("[AV整理] 移动 extrafanart/ (%d 张)", len(names))
-		}
-	}
-
-	// ===== 6. 移动 trailers 目录 =====
-	trailerSrc := srcDir + "/trailers"
-	trailerDst := targetDir + "/trailers"
-	if fs.Exists(trailerSrc) {
-		if err := fs.MkdirAll(trailerDst); err == nil {
-			names, _ := fs.List(trailerSrc)
-			for _, n := range names {
-				if err := fs.Move(trailerSrc+"/"+n, trailerDst, ""); err != nil {
-					helpers.AppLogger.Warnf("[AV整理] 移动 trailers/%s 失败: %v", n, err)
-				}
-			}
-			_ = fs.DeleteDir(trailerSrc)
-			helpers.AppLogger.Infof("[AV整理] 移动 trailers/ (%d 个)", len(names))
-		}
-	}
+	s.moveDir(fs, srcDir+"/extrafanart", targetDir+"/extrafanart", "extrafanart")
+	s.moveDir(fs, srcDir+"/trailers", targetDir+"/trailers", "trailers")
 
 	return nil
+}
+
+func (s *Scanner) moveDir(fs FileSystem, src, dst, label string) {
+	if !fs.Exists(src) {
+		return
+	}
+	if err := fs.MkdirAll(dst); err != nil {
+		helpers.AppLogger.Warnf("[AV整理] 创建 %s 目录失败: %v", label, err)
+		return
+	}
+	names, err := fs.List(src)
+	if err != nil {
+		helpers.AppLogger.Warnf("[AV整理] 列出 %s 失败: %v", label, err)
+		return
+	}
+	for _, n := range names {
+		if err := fs.Move(src+"/"+n, dst, ""); err != nil {
+			helpers.AppLogger.Warnf("[AV整理] 移动 %s/%s 失败: %v", label, n, err)
+		}
+	}
+	_ = fs.DeleteDir(src)
+	helpers.AppLogger.Infof("[AV整理] 移动 %s/ (%d 项) → %s/", label, len(names), dst)
 }
 
 func (s *Scanner) recordTask(code, filePath, status, msg, provider string) {
