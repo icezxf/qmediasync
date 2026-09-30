@@ -64,7 +64,7 @@ func (s *Service) Scrape(code string) (*ScrapeResult, error) {
 
 	best := mergeResults(allResults, cfg)
 
-	// ===== JavDB 评分 =====
+	// JavDB 评分
 	if cfg.EnableJavDBRating {
 		if rating, votes, err := GetJavDBRating(cfg.JavDBEndpoint, code); err == nil && rating > 0 {
 			best.Rating = rating
@@ -75,7 +75,7 @@ func (s *Service) Scrape(code string) (*ScrapeResult, error) {
 		}
 	}
 
-	// ===== 翻译 =====
+	// 翻译：只翻标题、简介、标签，不翻演员名
 	if cfg.EnableTranslate {
 		tr := NewTranslator(cfg.TranslateEngine, cfg.TranslateTarget)
 		tr.DeepLKey = cfg.TranslateDeepLKey
@@ -87,7 +87,6 @@ func (s *Service) Scrape(code string) (*ScrapeResult, error) {
 
 	media := MediaFromResult(best)
 
-	// Upsert
 	var existing models.AVMedia
 	err = s.DB.Where("code = ?", media.Code).First(&existing).Error
 	if err == nil {
@@ -104,22 +103,19 @@ func (s *Service) Scrape(code string) (*ScrapeResult, error) {
 	return best, nil
 }
 
-// =====================================================================
+// ============================================================
 // JavDB 评分
-// =====================================================================
+// ============================================================
 
 var javdbHTTPClient = &http.Client{Timeout: 20 * time.Second}
 var javdbLastReq time.Time
 var javdbMu sync.Mutex
 
-// GetJavDBRating 通过配置的 JavDB API 端点获取评分
-// 内置 15 秒限速，防触发 JavDB 的 CD
 func GetJavDBRating(endpoint, code string) (float64, int, error) {
 	if endpoint == "" {
 		return 0, 0, fmt.Errorf("JavDB endpoint 未配置")
 	}
 
-	// 限速：两次请求间隔至少 15 秒
 	javdbMu.Lock()
 	elapsed := time.Since(javdbLastReq)
 	if elapsed < 15*time.Second {
@@ -145,7 +141,6 @@ func GetJavDBRating(endpoint, code string) (float64, int, error) {
 		return 0, 0, fmt.Errorf("JavDB HTTP %d", resp.StatusCode)
 	}
 
-	// 兼容几种常见返回格式
 	var result struct {
 		Data []struct {
 			Number       string `json:"number"`
@@ -163,8 +158,6 @@ func GetJavDBRating(endpoint, code string) (float64, int, error) {
 	}
 
 	d := result.Data[0]
-
-	// 5 分制 → 10 分制
 	var raw float64
 	if d.Rate != "" {
 		fmt.Sscanf(d.Rate, "%f", &raw)
@@ -181,8 +174,6 @@ func GetJavDBRating(endpoint, code string) (float64, int, error) {
 	if raw <= 0 {
 		return 0, 0, fmt.Errorf("JavDB 无评分")
 	}
-
-	// 判定是 5 分制还是 10 分制：<=5 视为 5 分制，×2
 	rating := raw
 	if raw <= 5.0 {
 		rating = raw * 2
@@ -190,9 +181,9 @@ func GetJavDBRating(endpoint, code string) (float64, int, error) {
 	return rating, votes, nil
 }
 
-// =====================================================================
+// ============================================================
 // 合并多源
-// =====================================================================
+// ============================================================
 
 func mergeResults(results []*ScrapeResult, cfg *Config) *ScrapeResult {
 	sorted := sortByChinese(results, cfg.PreferChineseSource)
@@ -274,10 +265,11 @@ func mergeResults(results []*ScrapeResult, cfg *Config) *ScrapeResult {
 			}
 		}
 
+		// 演员合并：按名字 + aliases 交叉匹配去重
 		for _, a := range r.Actors {
 			found := false
 			for i := range best.Actors {
-				if best.Actors[i].Name == a.Name || aliasMatch(best.Actors[i], a) {
+				if aliasMatch(best.Actors[i], a) {
 					if best.Actors[i].Image == "" && a.Image != "" {
 						best.Actors[i].Image = a.Image
 					}
@@ -311,10 +303,11 @@ func mergeResults(results []*ScrapeResult, cfg *Config) *ScrapeResult {
 			}
 		}
 
+		// 标签合并去重（归一化后比较）
 		for _, g := range r.Genres {
 			exists := false
 			for _, bg := range best.Genres {
-				if bg == g {
+				if normalizeTag(bg) == normalizeTag(g) {
 					exists = true
 					break
 				}
@@ -341,38 +334,55 @@ func mergeResults(results []*ScrapeResult, cfg *Config) *ScrapeResult {
 	return &best
 }
 
-func normalizeName(s string) string {
-    s = strings.TrimSpace(s)
-    s = strings.ReplaceAll(s, "　", " ") // 全角空格 → 半角
-    return strings.ToLower(s)
+// aliasMatch 演员去重：名字 + aliases 交叉匹配 + 归一化
+func aliasMatch(a, b Actor) bool {
+	an := normalizeName(a.Name)
+	bn := normalizeName(b.Name)
+
+	if an == bn {
+		return true
+	}
+	for _, alias := range a.Aliases {
+		if normalizeName(alias) == bn {
+			return true
+		}
+	}
+	for _, alias := range b.Aliases {
+		if normalizeName(alias) == an {
+			return true
+		}
+	}
+	if len(a.Aliases) > 0 && len(b.Aliases) > 0 {
+		for _, al := range a.Aliases {
+			for _, bl := range b.Aliases {
+				if normalizeName(al) == normalizeName(bl) {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
-func aliasMatch(a, b Actor) bool {
-    an := normalizeName(a.Name)
-    bn := normalizeName(b.Name)
-    if an == bn {
-        return true
-    }
-    for _, alias := range a.Aliases {
-        if normalizeName(alias) == bn {
-            return true
-        }
-    }
-    for _, alias := range b.Aliases {
-        if normalizeName(alias) == an {
-            return true
-        }
-    }
-    if len(a.Aliases) > 0 && len(b.Aliases) > 0 {
-        for _, al := range a.Aliases {
-            for _, bl := range b.Aliases {
-                if normalizeName(al) == normalizeName(bl) {
-                    return true
-                }
-            }
-        }
-    }
-    return false
+// normalizeName 归一化人名：去空格、全角转半角、小写
+func normalizeName(s string) string {
+	s = strings.TrimSpace(s)
+	s = strings.ReplaceAll(s, "　", "")
+	s = strings.ReplaceAll(s, " ", "")
+	return strings.ToLower(s)
+}
+
+// normalizeTag 归一化标签：统一分隔符、去空格、小写、特殊映射
+func normalizeTag(s string) string {
+	s = strings.TrimSpace(s)
+	s = strings.ReplaceAll(s, "・", "、")
+	s = strings.ReplaceAll(s, "·", "、")
+	s = strings.ReplaceAll(s, "　", "")
+	s = strings.ReplaceAll(s, " ", "")
+	s = strings.ToLower(s)
+	// "four k" → "4k"
+	s = strings.ReplaceAll(s, "fourk", "4k")
+	return s
 }
 
 func sourceImagePriority(source string) int {
