@@ -59,22 +59,19 @@ func (s *Service) Scrape(code string) (*ScrapeResult, error) {
 
 	best := mergeResults(allResults, cfg)
 
+	// 翻译：只要开关打开就翻，不做任何条件判断
 	if cfg.EnableTranslate {
-		needTranslate := !containsChinese(best.Title) || !containsChinese(best.Plot)
-		if needTranslate {
-			tr := NewTranslator(cfg.TranslateEngine, cfg.TranslateTarget)
-			tr.DeepLKey = cfg.TranslateDeepLKey
-			tr.BingKey = cfg.TranslateBingKey
-			tr.BingRegion = cfg.TranslateBingRegion
-			helpers.AppLogger.Infof("[AV刮削] 开始翻译 %s (engine=%s)", code, cfg.TranslateEngine)
-			tr.TranslateResult(best)
-		} else {
-			helpers.AppLogger.Infof("[AV刮削] %s 标题或简介已是中文，跳过翻译", code)
-		}
+		tr := NewTranslator(cfg.TranslateEngine, cfg.TranslateTarget)
+		tr.DeepLKey = cfg.TranslateDeepLKey
+		tr.BingKey = cfg.TranslateBingKey
+		tr.BingRegion = cfg.TranslateBingRegion
+		helpers.AppLogger.Infof("[AV刮削] 开始翻译 %s (engine=%s)", code, cfg.TranslateEngine)
+		tr.TranslateResult(best)
 	}
 
 	media := MediaFromResult(best)
 
+	// Upsert：有就更新，没有就插入
 	var existing models.AVMedia
 	err = s.DB.Where("code = ?", media.Code).First(&existing).Error
 	if err == nil {
@@ -105,7 +102,6 @@ func mergeResults(results []*ScrapeResult, cfg *Config) *ScrapeResult {
 	var imageList []candidate
 	for _, r := range sorted {
 		p := sourceImagePriority(r.Source)
-		// Poster 和 Fanart 都扔进候选池
 		if r.Poster != "" {
 			imageList = append(imageList, candidate{r.Poster, p})
 		}
@@ -159,6 +155,7 @@ func mergeResults(results []*ScrapeResult, cfg *Config) *ScrapeResult {
 			best.Trailer = r.Trailer
 		}
 
+		// 剧照合并去重
 		for _, img := range r.PreviewImages {
 			exists := false
 			for _, bi := range best.PreviewImages {
@@ -177,7 +174,6 @@ func mergeResults(results []*ScrapeResult, cfg *Config) *ScrapeResult {
 			found := false
 			for i := range best.Actors {
 				if best.Actors[i].Name == a.Name || aliasMatch(best.Actors[i], a) {
-					// 视为同一人，合并缺失字段
 					if best.Actors[i].Image == "" && a.Image != "" {
 						best.Actors[i].Image = a.Image
 					}
@@ -190,7 +186,6 @@ func mergeResults(results []*ScrapeResult, cfg *Config) *ScrapeResult {
 					if best.Actors[i].Height == 0 && a.Height > 0 {
 						best.Actors[i].Height = a.Height
 					}
-					// 合并 aliases
 					for _, al := range a.Aliases {
 						exists := false
 						for _, bal := range best.Actors[i].Aliases {
@@ -212,6 +207,7 @@ func mergeResults(results []*ScrapeResult, cfg *Config) *ScrapeResult {
 			}
 		}
 
+		// 标签合并去重
 		for _, g := range r.Genres {
 			exists := false
 			for _, bg := range best.Genres {
@@ -225,6 +221,7 @@ func mergeResults(results []*ScrapeResult, cfg *Config) *ScrapeResult {
 			}
 		}
 
+		// URL 合并去重
 		for _, u := range r.Urls {
 			exists := false
 			for _, bu := range best.Urls {
@@ -254,7 +251,6 @@ func aliasMatch(a, b Actor) bool {
 			return true
 		}
 	}
-	// 两个都有 aliases，且有任何交集
 	if len(a.Aliases) > 0 && len(b.Aliases) > 0 {
 		for _, al := range a.Aliases {
 			for _, bl := range b.Aliases {
@@ -285,6 +281,7 @@ func sourceImagePriority(source string) int {
 	}
 }
 
+// sortByChinese 有中文优先，其次按完整度
 func sortByChinese(results []*ScrapeResult, preferChinese bool) []*ScrapeResult {
 	sorted := make([]*ScrapeResult, len(results))
 	copy(sorted, results)
