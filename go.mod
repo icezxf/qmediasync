@@ -3,7 +3,6 @@ module Q115-STRM
 go 1.25
 
 require (
-    github.com/fogleman/gg v1.3.0
 	github.com/aliyun/alibabacloud-oss-go-sdk-v2 v1.2.3
 	github.com/bogem/id3v2 v1.2.0
 	github.com/flosch/pongo2/v5 v5.0.0
