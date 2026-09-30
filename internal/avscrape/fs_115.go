@@ -139,24 +139,42 @@ func (f *FS115) MkdirAll(path string) error {
 	return nil
 }
 
-func (f *FS115) Move(src, dstDir, newName string) error {
-	waitLimit()
-	srcDetail, err := f.client.GetFsDetailByPath(f.ctx, src)
-	if err != nil || srcDetail == nil || srcDetail.FileId == "" {
-		return fmt.Errorf("获取源文件失败: %s", src)
+// Move 移动文件。srcID 非空时跳过源文件的 detail 查询（省一次 API）
+func (f *FS115) Move(src, srcID, dstDir, newName string) error {
+	var srcFileId string
+	var srcFileName string
+
+	if srcID != "" {
+		// 已有 fileId，无需查源文件详情
+		srcFileId = srcID
+		srcFileName = filepath.Base(src)
+	} else {
+		waitLimit()
+		srcDetail, err := f.client.GetFsDetailByPath(f.ctx, src)
+		if err != nil || srcDetail == nil || srcDetail.FileId == "" {
+			return fmt.Errorf("获取源文件失败: %s", src)
+		}
+		srcFileId = srcDetail.FileId
+		srcFileName = srcDetail.FileName
 	}
+
+	// 目标目录详情
 	waitLimit()
 	dstDetail, err := f.client.GetFsDetailByPath(f.ctx, dstDir)
 	if err != nil || dstDetail == nil || dstDetail.FileId == "" {
 		return fmt.Errorf("获取目标目录失败: %s", dstDir)
 	}
+
+	// 移动
 	waitLimit()
-	if _, err := f.client.Move(f.ctx, []string{srcDetail.FileId}, dstDetail.FileId); err != nil {
+	if _, err := f.client.Move(f.ctx, []string{srcFileId}, dstDetail.FileId); err != nil {
 		return err
 	}
-	if newName != "" && newName != srcDetail.FileName {
+
+	// 改名
+	if newName != "" && newName != srcFileName {
 		waitLimit()
-		_, err = f.client.ReName(f.ctx, srcDetail.FileId, newName)
+		_, err = f.client.ReName(f.ctx, srcFileId, newName)
 	}
 	return err
 }
@@ -240,32 +258,23 @@ func (f *FS115) Upload(localPath, remotePath string) error {
 	return err
 }
 
-// QueueUploads 把本地文件加入上传队列（异步走 GlobalUploadQueue）
-// 只做目录创建和一次 detail 查询，然后批量把任务写入 db_upload_tasks 表
 func (f *FS115) QueueUploads(files []LocalFile, dstDir string, accountId uint, sourceType string) (int, error) {
 	if len(files) == 0 {
 		return 0, nil
 	}
-
-	// 1. 确保目标目录存在
 	if err := f.MkdirAll(dstDir); err != nil {
 		return 0, fmt.Errorf("创建目标目录失败: %w", err)
 	}
-
-	// 2. 查一次目标目录详情
 	waitLimit()
 	dstDetail, err := f.client.GetFsDetailByPath(f.ctx, dstDir)
 	if err != nil || dstDetail == nil || dstDetail.FileId == "" {
 		return 0, fmt.Errorf("获取目标目录失败: %s", dstDir)
 	}
 	dstDirId := dstDetail.FileId
-
-	// 3. 缓存子目录 ID
 	subDirCache := map[string]string{}
 
 	count := 0
 	for _, file := range files {
-		// 处理子目录（如 extrafanart/scene-01.jpg）
 		parentId := dstDirId
 		remoteName := file.RemoteName
 		if idx := strings.LastIndex(remoteName, "/"); idx > 0 {
@@ -282,8 +291,6 @@ func (f *FS115) QueueUploads(files []LocalFile, dstDir string, accountId uint, s
 			parentId = subId
 			remoteName = fileName
 		}
-
-		// 加入上传队列
 		remoteFullPath := dstDir + "/" + file.RemoteName
 		if err := models.AddUploadTaskFromAV(accountId, models.SourceType(sourceType), remoteName, file.LocalPath, remoteFullPath, parentId); err != nil {
 			helpers.AppLogger.Warnf("[AV上传队列] %s 加入队列失败: %v", file.RemoteName, err)
@@ -295,23 +302,19 @@ func (f *FS115) QueueUploads(files []LocalFile, dstDir string, accountId uint, s
 	return count, nil
 }
 
-// ensureSubDirCached 递归创建子目录，用 cache 避免重复查询
 func (f *FS115) ensureSubDirCached(rootId, rootPath, subDir string, cache map[string]string) (string, error) {
 	parts := strings.Split(strings.Trim(subDir, "/"), "/")
 	currentId := rootId
 	currentPath := rootPath
-
 	for i := 0; i < len(parts); i++ {
 		subPath := parts[i]
 		fullPath := currentPath + "/" + subPath
 		cacheKey := strings.Join(parts[:i+1], "/")
-
 		if id, ok := cache[cacheKey]; ok {
 			currentId = id
 			currentPath = fullPath
 			continue
 		}
-
 		waitLimit()
 		detail, err := f.client.GetFsDetailByPath(f.ctx, fullPath)
 		if err == nil && detail != nil && detail.FileId != "" {
@@ -320,7 +323,6 @@ func (f *FS115) ensureSubDirCached(rootId, rootPath, subDir string, cache map[st
 			currentPath = fullPath
 			continue
 		}
-
 		waitLimit()
 		newId, err := f.client.MkDir(f.ctx, currentId, subPath)
 		if err != nil {
@@ -330,6 +332,5 @@ func (f *FS115) ensureSubDirCached(rootId, rootPath, subDir string, cache map[st
 		currentId = newId
 		currentPath = fullPath
 	}
-
 	return currentId, nil
 }
