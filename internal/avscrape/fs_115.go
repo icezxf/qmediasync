@@ -13,7 +13,6 @@ import (
 	"Q115-STRM/internal/v115open"
 )
 
-// waitLimit 简单节流，避免 115 风控
 func waitLimit() {
 	time.Sleep(500 * time.Millisecond)
 }
@@ -239,4 +238,98 @@ func (f *FS115) Upload(localPath, remotePath string) error {
 	waitLimit()
 	_, err = f.client.Upload(f.ctx, localPath, parentDetail.FileId, "", "")
 	return err
+}
+
+// QueueUploads 把本地文件加入上传队列（异步走 GlobalUploadQueue）
+// 只做目录创建和一次 detail 查询，然后批量把任务写入 db_upload_tasks 表
+func (f *FS115) QueueUploads(files []LocalFile, dstDir string, accountId uint, sourceType string) (int, error) {
+	if len(files) == 0 {
+		return 0, nil
+	}
+
+	// 1. 确保目标目录存在
+	if err := f.MkdirAll(dstDir); err != nil {
+		return 0, fmt.Errorf("创建目标目录失败: %w", err)
+	}
+
+	// 2. 查一次目标目录详情
+	waitLimit()
+	dstDetail, err := f.client.GetFsDetailByPath(f.ctx, dstDir)
+	if err != nil || dstDetail == nil || dstDetail.FileId == "" {
+		return 0, fmt.Errorf("获取目标目录失败: %s", dstDir)
+	}
+	dstDirId := dstDetail.FileId
+
+	// 3. 缓存子目录 ID
+	subDirCache := map[string]string{}
+
+	count := 0
+	for _, file := range files {
+		// 处理子目录（如 extrafanart/scene-01.jpg）
+		parentId := dstDirId
+		remoteName := file.RemoteName
+		if idx := strings.LastIndex(remoteName, "/"); idx > 0 {
+			subDir := remoteName[:idx]
+			fileName := remoteName[idx+1:]
+			subId, ok := subDirCache[subDir]
+			if !ok {
+				subId, err = f.ensureSubDirCached(dstDirId, dstDir, subDir, subDirCache)
+				if err != nil {
+					helpers.AppLogger.Warnf("[AV上传队列] 创建子目录失败 %s: %v", subDir, err)
+					continue
+				}
+			}
+			parentId = subId
+			remoteName = fileName
+		}
+
+		// 加入上传队列
+		remoteFullPath := dstDir + "/" + file.RemoteName
+		if err := models.AddUploadTaskFromAV(accountId, models.SourceType(sourceType), remoteName, file.LocalPath, remoteFullPath, parentId); err != nil {
+			helpers.AppLogger.Warnf("[AV上传队列] %s 加入队列失败: %v", file.RemoteName, err)
+			continue
+		}
+		helpers.AppLogger.Infof("[AV上传队列] %s 已加入队列 (remote=%s, parentId=%s)", file.RemoteName, remoteFullPath, parentId)
+		count++
+	}
+	return count, nil
+}
+
+// ensureSubDirCached 递归创建子目录，用 cache 避免重复查询
+func (f *FS115) ensureSubDirCached(rootId, rootPath, subDir string, cache map[string]string) (string, error) {
+	parts := strings.Split(strings.Trim(subDir, "/"), "/")
+	currentId := rootId
+	currentPath := rootPath
+
+	for i := 0; i < len(parts); i++ {
+		subPath := parts[i]
+		fullPath := currentPath + "/" + subPath
+		cacheKey := strings.Join(parts[:i+1], "/")
+
+		if id, ok := cache[cacheKey]; ok {
+			currentId = id
+			currentPath = fullPath
+			continue
+		}
+
+		waitLimit()
+		detail, err := f.client.GetFsDetailByPath(f.ctx, fullPath)
+		if err == nil && detail != nil && detail.FileId != "" {
+			cache[cacheKey] = detail.FileId
+			currentId = detail.FileId
+			currentPath = fullPath
+			continue
+		}
+
+		waitLimit()
+		newId, err := f.client.MkDir(f.ctx, currentId, subPath)
+		if err != nil {
+			return "", fmt.Errorf("创建子目录失败 %s: %w", fullPath, err)
+		}
+		cache[cacheKey] = newId
+		currentId = newId
+		currentPath = fullPath
+	}
+
+	return currentId, nil
 }
