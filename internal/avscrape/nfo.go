@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"Q115-STRM/internal/models"
 )
 
 // GenerateNFO 根据 ScrapeResult 生成 NFO 文本
@@ -30,7 +32,10 @@ func GenerateNFO(r *ScrapeResult) string {
 	if r.ReleaseDate != "" {
 		sb.WriteString(fmt.Sprintf("  <premiered>%s</premiered>\n", r.ReleaseDate))
 		sb.WriteString(fmt.Sprintf("  <releasedate>%s</releasedate>\n", r.ReleaseDate))
-		sb.WriteString(fmt.Sprintf("  <year>%s</year>\n", extractYear(r.ReleaseDate)))
+		// 直接从日期字符串取年份，不用辅助函数
+		if len(r.ReleaseDate) >= 4 {
+			sb.WriteString(fmt.Sprintf("  <year>%s</year>\n", r.ReleaseDate[:4]))
+		}
 	}
 
 	// 时长
@@ -105,8 +110,7 @@ func GenerateNFO(r *ScrapeResult) string {
 		}
 		// 演员资料页
 		if a.Name != "" {
-			profileURL := fmt.Sprintf("https://javstash.org/performers?q=%s", a.Name)
-			sb.WriteString(fmt.Sprintf("    <profile>%s</profile>\n", profileURL))
+			sb.WriteString(fmt.Sprintf("    <profile>https://javstash.org/performers?q=%s</profile>\n", a.Name))
 		}
 		sb.WriteString("  </actor>\n")
 	}
@@ -118,15 +122,6 @@ func GenerateNFO(r *ScrapeResult) string {
 
 	sb.WriteString("</movie>\n")
 	return sb.String()
-}
-
-// extractYear 从日期字符串里提取年份
-// 支持 "2022-09-16" 和 "2022-09-16T00:00:00Z" 两种格式
-func extractYear(date string) string {
-	if len(date) >= 4 {
-		return date[:4]
-	}
-	return ""
 }
 
 // MediaFromResult 把 ScrapeResult 转成 AVMedia 入库
