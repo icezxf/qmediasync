@@ -2,13 +2,14 @@ package avscrape
 
 // Actor 演员信息
 type Actor struct {
-	Name     string `json:"name"`
-	Role     string `json:"role,omitempty"`
-	Thumb    string `json:"thumb,omitempty"`
-	Birthday string `json:"birthday,omitempty"`
-	Country  string `json:"country,omitempty"`
-	Height   int    `json:"height,omitempty"`
-	Image    string `json:"image,omitempty"`
+	Name     string   `json:"name"`
+	Aliases  []string `json:"aliases,omitempty"`
+	Role     string   `json:"role,omitempty"`
+	Thumb    string   `json:"thumb,omitempty"`
+	Birthday string   `json:"birthday,omitempty"`
+	Country  string   `json:"country,omitempty"`
+	Height   int      `json:"height,omitempty"`
+	Image    string   `json:"image,omitempty"`
 }
 
 // ScrapeResult 统一刮削结果
@@ -34,9 +35,8 @@ type ScrapeResult struct {
 	Source        string   `json:"source"`
 	HasChinese    bool     `json:"has_chinese"`
 
-	// 候选 URL 列表（下载失败时依次 fallback）
-	PosterCandidates []string `json:"-"`
-	FanartCandidates []string `json:"-"`
+	// 统一的图片候选池（按优先级排序），下载时按方向自动分派
+	ImageCandidates []string `json:"-"`
 }
 
 // Provider 刮削源接口
