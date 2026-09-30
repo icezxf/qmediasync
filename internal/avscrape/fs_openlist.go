@@ -13,6 +13,11 @@ import (
 	"Q115-STRM/internal/v115open"
 )
 
+// slowDown OpenList 也加节流
+func slowDown() {
+	time.Sleep(500 * time.Millisecond)
+}
+
 type FSOpenList struct {
 	client *openlist.Client
 	ctx    context.Context
@@ -43,6 +48,7 @@ func (f *FSOpenList) List(path string) ([]string, error) {
 }
 
 func (f *FSOpenList) ListDetailed(path string) ([]FileEntry, error) {
+	slowDown()
 	resp, err := f.client.FileList(f.ctx, path, 1, 1000)
 	if err != nil {
 		return nil, err
@@ -62,6 +68,7 @@ func (f *FSOpenList) ListDetailed(path string) ([]FileEntry, error) {
 }
 
 func (f *FSOpenList) Read(path string) ([]byte, error) {
+	slowDown()
 	url := f.client.GetRawUrl(path)
 	if url == "" {
 		return nil, fmt.Errorf("获取直链失败: %s", path)
@@ -70,6 +77,11 @@ func (f *FSOpenList) Read(path string) ([]byte, error) {
 }
 
 func (f *FSOpenList) Write(path string, data []byte) error {
+	if f.Exists(path) {
+		if err := f.Delete(path); err != nil {
+			return fmt.Errorf("删除已存在文件失败: %w", err)
+		}
+	}
 	tmpFile, err := os.CreateTemp("", "avscrape-*")
 	if err != nil {
 		return err
@@ -81,46 +93,56 @@ func (f *FSOpenList) Write(path string, data []byte) error {
 		return err
 	}
 	tmpFile.Close()
+	slowDown()
 	_, err = f.client.Upload(tmpPath, path)
 	return err
 }
 
 func (f *FSOpenList) MkdirAll(path string) error {
+	slowDown()
 	return f.client.Mkdir(path)
 }
 
 func (f *FSOpenList) Move(src, dstDir, newName string) error {
+	slowDown()
 	if newName != "" && newName != filepath.Base(src) {
 		if err := f.client.Rename(filepath.Dir(src), filepath.Base(src), newName); err != nil {
 			return err
 		}
 		src = filepath.Join(filepath.Dir(src), newName)
 	}
+	slowDown()
 	return f.client.Move(filepath.Dir(src), dstDir, []string{filepath.Base(src)})
 }
 
 func (f *FSOpenList) Copy(src, dstDir string) error {
+	slowDown()
 	return f.client.Copy(filepath.Dir(src), dstDir, []string{filepath.Base(src)})
 }
 
 func (f *FSOpenList) Rename(path, newName string) error {
+	slowDown()
 	return f.client.Rename(filepath.Dir(path), filepath.Base(path), newName)
 }
 
 func (f *FSOpenList) Exists(path string) bool {
+	slowDown()
 	detail, err := f.client.FileDetail(path)
 	return err == nil && detail != nil && detail.Name != ""
 }
 
 func (f *FSOpenList) Delete(path string) error {
+	slowDown()
 	return f.client.Del(filepath.Dir(path), []string{filepath.Base(path)})
 }
 
 func (f *FSOpenList) DeleteDir(path string) error {
+	slowDown()
 	return f.client.Del(filepath.Dir(path), []string{filepath.Base(path)})
 }
 
 func (f *FSOpenList) Download(remotePath, localPath string) error {
+	slowDown()
 	url := f.client.GetRawUrl(remotePath)
 	if url == "" {
 		return fmt.Errorf("获取直链失败: %s", remotePath)
@@ -129,6 +151,12 @@ func (f *FSOpenList) Download(remotePath, localPath string) error {
 }
 
 func (f *FSOpenList) Upload(localPath, remotePath string) error {
+	if f.Exists(remotePath) {
+		if err := f.Delete(remotePath); err != nil {
+			return fmt.Errorf("删除已存在文件失败: %w", err)
+		}
+	}
+	slowDown()
 	_, err := f.client.Upload(localPath, remotePath)
 	return err
 }
