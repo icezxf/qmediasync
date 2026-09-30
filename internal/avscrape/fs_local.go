@@ -107,3 +107,8 @@ func (f *FSLocal) Download(remotePath, localPath string) error {
 func (f *FSLocal) Upload(localPath, remotePath string) error {
 	return helpers.CopyFile(localPath, remotePath)
 }
+
+func (f *FSLocal) GetURL(path string) (string, error) {
+	// 本地文件直接返回路径，ffprobe 可以直接读本地
+	return path, nil
+}
