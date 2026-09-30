@@ -13,10 +13,6 @@ import (
 	"Q115-STRM/internal/v115open"
 )
 
-func waitLimit() {
-	time.Sleep(500 * time.Millisecond)
-}
-
 type FS115 struct {
 	client *v115open.OpenClient
 	ctx    context.Context
@@ -47,12 +43,10 @@ func (f *FS115) List(path string) ([]string, error) {
 }
 
 func (f *FS115) ListDetailed(path string) ([]FileEntry, error) {
-	waitLimit()
 	detail, err := f.client.GetFsDetailByPath(f.ctx, path)
 	if err != nil || detail == nil || detail.FileId == "" {
 		return nil, fmt.Errorf("获取目录详情失败: %s, %v", path, err)
 	}
-	waitLimit()
 	resp, err := f.client.GetFsList(f.ctx, detail.FileId, true, false, true, 0, 1150)
 	if err != nil {
 		return nil, err
@@ -73,7 +67,6 @@ func (f *FS115) ListDetailed(path string) ([]FileEntry, error) {
 }
 
 func (f *FS115) Read(path string) ([]byte, error) {
-	waitLimit()
 	detail, err := f.client.GetFsDetailByPath(f.ctx, path)
 	if err != nil || detail == nil || detail.FileId == "" {
 		return nil, fmt.Errorf("获取文件详情失败: %s, %v", path, err)
@@ -99,12 +92,10 @@ func (f *FS115) Write(path string, data []byte) error {
 	tmpFile.Close()
 
 	parentPath := filepath.ToSlash(filepath.Dir(path))
-	waitLimit()
 	parentDetail, err := f.client.GetFsDetailByPath(f.ctx, parentPath)
 	if err != nil || parentDetail == nil || parentDetail.FileId == "" {
 		return fmt.Errorf("获取父目录失败: %s", parentPath)
 	}
-	waitLimit()
 	_, err = f.client.Upload(f.ctx, tmpPath, parentDetail.FileId, "", "")
 	return err
 }
@@ -112,7 +103,7 @@ func (f *FS115) Write(path string, data []byte) error {
 func (f *FS115) MkdirAll(path string) error {
 	parts := strings.Split(strings.Trim(path, "/"), "/")
 	currentPath := ""
-	var currentId string = "0"
+	currentId := "0"
 
 	for _, part := range parts {
 		if part == "" {
@@ -123,13 +114,11 @@ func (f *FS115) MkdirAll(path string) error {
 		} else {
 			currentPath = currentPath + "/" + part
 		}
-		waitLimit()
 		detail, err := f.client.GetFsDetailByPath(f.ctx, currentPath)
 		if err == nil && detail != nil && detail.FileId != "" {
 			currentId = detail.FileId
 			continue
 		}
-		waitLimit()
 		newId, err := f.client.MkDir(f.ctx, currentId, part)
 		if err != nil {
 			return fmt.Errorf("创建目录失败 %s: %w", currentPath, err)
@@ -139,92 +128,62 @@ func (f *FS115) MkdirAll(path string) error {
 	return nil
 }
 
-// Move 移动文件。srcID 非空时跳过源文件的 detail 查询（省一次 API）
-func (f *FS115) Move(src, srcID, dstDir, newName string) error {
-	var srcFileId string
-	var srcFileName string
-
-	if srcID != "" {
-		// 已有 fileId，无需查源文件详情
-		srcFileId = srcID
-		srcFileName = filepath.Base(src)
-	} else {
-		waitLimit()
-		srcDetail, err := f.client.GetFsDetailByPath(f.ctx, src)
-		if err != nil || srcDetail == nil || srcDetail.FileId == "" {
-			return fmt.Errorf("获取源文件失败: %s", src)
-		}
-		srcFileId = srcDetail.FileId
-		srcFileName = srcDetail.FileName
+// Move 移动文件到目标目录，可选改名
+func (f *FS115) Move(src, dstDir, newName string) error {
+	srcDetail, err := f.client.GetFsDetailByPath(f.ctx, src)
+	if err != nil || srcDetail == nil || srcDetail.FileId == "" {
+		return fmt.Errorf("获取源文件失败: %s", src)
 	}
-
-	// 目标目录详情
-	waitLimit()
 	dstDetail, err := f.client.GetFsDetailByPath(f.ctx, dstDir)
 	if err != nil || dstDetail == nil || dstDetail.FileId == "" {
 		return fmt.Errorf("获取目标目录失败: %s", dstDir)
 	}
-
-	// 移动
-	waitLimit()
-	if _, err := f.client.Move(f.ctx, []string{srcFileId}, dstDetail.FileId); err != nil {
+	if _, err := f.client.Move(f.ctx, []string{srcDetail.FileId}, dstDetail.FileId); err != nil {
 		return err
 	}
-
-	// 改名
-	if newName != "" && newName != srcFileName {
-		waitLimit()
-		_, err = f.client.ReName(f.ctx, srcFileId, newName)
+	if newName != "" && newName != srcDetail.FileName {
+		_, err = f.client.ReName(f.ctx, srcDetail.FileId, newName)
 	}
 	return err
 }
 
 func (f *FS115) Copy(src, dstDir string) error {
-	waitLimit()
 	srcDetail, err := f.client.GetFsDetailByPath(f.ctx, src)
 	if err != nil || srcDetail == nil || srcDetail.FileId == "" {
 		return fmt.Errorf("获取源文件失败: %s", src)
 	}
-	waitLimit()
 	dstDetail, err := f.client.GetFsDetailByPath(f.ctx, dstDir)
 	if err != nil || dstDetail == nil || dstDetail.FileId == "" {
 		return fmt.Errorf("获取目标目录失败: %s", dstDir)
 	}
-	waitLimit()
 	_, err = f.client.Copy(f.ctx, []string{srcDetail.FileId}, dstDetail.FileId, false)
 	return err
 }
 
 func (f *FS115) Rename(path, newName string) error {
-	waitLimit()
 	detail, err := f.client.GetFsDetailByPath(f.ctx, path)
 	if err != nil || detail == nil || detail.FileId == "" {
 		return fmt.Errorf("获取文件失败: %s", path)
 	}
-	waitLimit()
 	_, err = f.client.ReName(f.ctx, detail.FileId, newName)
 	return err
 }
 
 func (f *FS115) Exists(path string) bool {
-	waitLimit()
 	detail, err := f.client.GetFsDetailByPath(f.ctx, path)
 	return err == nil && detail != nil && detail.FileId != ""
 }
 
 func (f *FS115) Delete(path string) error {
-	waitLimit()
 	detail, err := f.client.GetFsDetailByPath(f.ctx, path)
 	if err != nil || detail == nil || detail.FileId == "" {
 		return nil
 	}
 	parentPath := filepath.ToSlash(filepath.Dir(path))
-	waitLimit()
 	parentDetail, err := f.client.GetFsDetailByPath(f.ctx, parentPath)
 	if err != nil || parentDetail == nil || parentDetail.FileId == "" {
 		return fmt.Errorf("获取父目录失败: %s", parentPath)
 	}
-	waitLimit()
 	_, err = f.client.Del(f.ctx, []string{detail.FileId}, parentDetail.FileId)
 	return err
 }
@@ -234,7 +193,6 @@ func (f *FS115) DeleteDir(path string) error {
 }
 
 func (f *FS115) Download(remotePath, localPath string) error {
-	waitLimit()
 	detail, err := f.client.GetFsDetailByPath(f.ctx, remotePath)
 	if err != nil || detail == nil || detail.FileId == "" {
 		return fmt.Errorf("获取文件详情失败: %s", remotePath)
@@ -248,89 +206,10 @@ func (f *FS115) Download(remotePath, localPath string) error {
 
 func (f *FS115) Upload(localPath, remotePath string) error {
 	parentPath := filepath.ToSlash(filepath.Dir(remotePath))
-	waitLimit()
 	parentDetail, err := f.client.GetFsDetailByPath(f.ctx, parentPath)
 	if err != nil || parentDetail == nil || parentDetail.FileId == "" {
 		return fmt.Errorf("获取父目录失败: %s", parentPath)
 	}
-	waitLimit()
 	_, err = f.client.Upload(f.ctx, localPath, parentDetail.FileId, "", "")
 	return err
-}
-
-func (f *FS115) QueueUploads(files []LocalFile, dstDir string, accountId uint, sourceType string) (int, error) {
-	if len(files) == 0 {
-		return 0, nil
-	}
-	if err := f.MkdirAll(dstDir); err != nil {
-		return 0, fmt.Errorf("创建目标目录失败: %w", err)
-	}
-	waitLimit()
-	dstDetail, err := f.client.GetFsDetailByPath(f.ctx, dstDir)
-	if err != nil || dstDetail == nil || dstDetail.FileId == "" {
-		return 0, fmt.Errorf("获取目标目录失败: %s", dstDir)
-	}
-	dstDirId := dstDetail.FileId
-	subDirCache := map[string]string{}
-
-	count := 0
-	for _, file := range files {
-		parentId := dstDirId
-		remoteName := file.RemoteName
-		if idx := strings.LastIndex(remoteName, "/"); idx > 0 {
-			subDir := remoteName[:idx]
-			fileName := remoteName[idx+1:]
-			subId, ok := subDirCache[subDir]
-			if !ok {
-				subId, err = f.ensureSubDirCached(dstDirId, dstDir, subDir, subDirCache)
-				if err != nil {
-					helpers.AppLogger.Warnf("[AV上传队列] 创建子目录失败 %s: %v", subDir, err)
-					continue
-				}
-			}
-			parentId = subId
-			remoteName = fileName
-		}
-		remoteFullPath := dstDir + "/" + file.RemoteName
-		if err := models.AddUploadTaskFromAV(accountId, models.SourceType(sourceType), remoteName, file.LocalPath, remoteFullPath, parentId); err != nil {
-			helpers.AppLogger.Warnf("[AV上传队列] %s 加入队列失败: %v", file.RemoteName, err)
-			continue
-		}
-		helpers.AppLogger.Infof("[AV上传队列] %s 已加入队列 (remote=%s, parentId=%s)", file.RemoteName, remoteFullPath, parentId)
-		count++
-	}
-	return count, nil
-}
-
-func (f *FS115) ensureSubDirCached(rootId, rootPath, subDir string, cache map[string]string) (string, error) {
-	parts := strings.Split(strings.Trim(subDir, "/"), "/")
-	currentId := rootId
-	currentPath := rootPath
-	for i := 0; i < len(parts); i++ {
-		subPath := parts[i]
-		fullPath := currentPath + "/" + subPath
-		cacheKey := strings.Join(parts[:i+1], "/")
-		if id, ok := cache[cacheKey]; ok {
-			currentId = id
-			currentPath = fullPath
-			continue
-		}
-		waitLimit()
-		detail, err := f.client.GetFsDetailByPath(f.ctx, fullPath)
-		if err == nil && detail != nil && detail.FileId != "" {
-			cache[cacheKey] = detail.FileId
-			currentId = detail.FileId
-			currentPath = fullPath
-			continue
-		}
-		waitLimit()
-		newId, err := f.client.MkDir(f.ctx, currentId, subPath)
-		if err != nil {
-			return "", fmt.Errorf("创建子目录失败 %s: %w", fullPath, err)
-		}
-		cache[cacheKey] = newId
-		currentId = newId
-		currentPath = fullPath
-	}
-	return currentId, nil
 }
