@@ -25,6 +25,7 @@ func (s *Service) Scrape(code string) (*ScrapeResult, error) {
 	}
 	var allResults []*ScrapeResult
 
+	// MetaTube
 	if cfg.EnableMetaTube && cfg.MetaTubeServer != "" {
 		mt := NewMetaTubeClient(cfg.MetaTubeServer)
 		hits, err := mt.Search(code)
@@ -44,6 +45,7 @@ func (s *Service) Scrape(code string) (*ScrapeResult, error) {
 		}
 	}
 
+	// JavStash
 	if cfg.EnableJavStash {
 		js := NewJavStashClient(cfg.JavStashEndpoint, cfg.JavStashAPIKey)
 		hits, err := js.Search(code)
@@ -58,6 +60,7 @@ func (s *Service) Scrape(code string) (*ScrapeResult, error) {
 
 	best := mergeResults(allResults, cfg)
 
+	// 翻译
 	if cfg.EnableTranslate && !best.HasChinese {
 		tr := NewTranslator(cfg.TranslateEngine, cfg.TranslateTarget)
 		tr.TranslateResult(best)
@@ -83,9 +86,11 @@ func (s *Service) Scrape(code string) (*ScrapeResult, error) {
 	return best, nil
 }
 
-// mergeResults 合并多个源的结果
-// 图片优先级：JavStash 海报 > DMM/FANZA > JAV321 > JavBus
-// mergeResults 合并多个源的结果
+// mergeResults 合并多源结果
+// 关键点：
+//   - poster 从竖版来源取（DMM/JavBus/JAV321）
+//   - fanart 从横版来源取（JavStash 的 Scene.images / DMM 横版图）
+//   - 演员只取优先级最高的一个源，不合并（避免错误演员混入）
 func mergeResults(results []*ScrapeResult, cfg *Config) *ScrapeResult {
 	sorted := sortByChinese(results, cfg.PreferChineseSource)
 
@@ -93,7 +98,6 @@ func mergeResults(results []*ScrapeResult, cfg *Config) *ScrapeResult {
 	best.PosterCandidates = []string{}
 	best.FanartCandidates = []string{}
 
-	// 图片候选池
 	type candidate struct {
 		url      string
 		priority int
@@ -102,17 +106,26 @@ func mergeResults(results []*ScrapeResult, cfg *Config) *ScrapeResult {
 	var fanartList []candidate
 
 	for _, r := range sorted {
-		p := sourceImagePriority(r.Source)
+		// 竖版海报候选
 		if r.Poster != "" {
-			posterList = append(posterList, candidate{r.Poster, p})
+			posterList = append(posterList, candidate{r.Poster, sourcePosterPriority(r.Source)})
 		}
+		// 横版背景图候选
 		if r.Fanart != "" {
-			fanartList = append(fanartList, candidate{r.Fanart, p})
+			fanartList = append(fanartList, candidate{r.Fanart, sourceFanartPriority(r.Source)})
+		}
+		// JavStash 的 Poster 字段实际是横版场景图，也作为 fanart 候选
+		if strings.HasPrefix(r.Source, "javstash") && r.Poster != "" {
+			fanartList = append(fanartList, candidate{r.Poster, 1})
 		}
 	}
 
-	sort.SliceStable(posterList, func(i, j int) bool { return posterList[i].priority < posterList[j].priority })
-	sort.SliceStable(fanartList, func(i, j int) bool { return fanartList[i].priority < fanartList[j].priority })
+	sort.SliceStable(posterList, func(i, j int) bool {
+		return posterList[i].priority < posterList[j].priority
+	})
+	sort.SliceStable(fanartList, func(i, j int) bool {
+		return fanartList[i].priority < fanartList[j].priority
+	})
 
 	seenPoster := map[string]bool{}
 	for _, c := range posterList {
@@ -128,6 +141,7 @@ func mergeResults(results []*ScrapeResult, cfg *Config) *ScrapeResult {
 			seenFanart[c.url] = true
 		}
 	}
+
 	if len(best.PosterCandidates) > 0 {
 		best.Poster = best.PosterCandidates[0]
 	}
@@ -135,7 +149,7 @@ func mergeResults(results []*ScrapeResult, cfg *Config) *ScrapeResult {
 		best.Fanart = best.FanartCandidates[0]
 	}
 
-	// ===== 关键修复：演员只取最可信的一个源，不合并 =====
+	// ===== 演员只取优先级最高的一个源 =====
 	bestActors := []Actor{}
 	bestActorPriority := 999
 	for _, r := range sorted {
@@ -150,24 +164,47 @@ func mergeResults(results []*ScrapeResult, cfg *Config) *ScrapeResult {
 	}
 	best.Actors = bestActors
 
-	// ===== 合并其他字段（按优先级取第一个非空）=====
+	// ===== 合并其他字段 =====
 	for _, r := range sorted[1:] {
-		if best.Plot == "" && r.Plot != "" { best.Plot = r.Plot }
-		if best.OriginalTitle == "" && r.OriginalTitle != "" { best.OriginalTitle = r.OriginalTitle }
-		if best.Director == "" && r.Director != "" { best.Director = r.Director }
-		if best.Studio == "" && r.Studio != "" { best.Studio = r.Studio }
-		if best.Label == "" && r.Label != "" { best.Label = r.Label }
-		if best.Series == "" && r.Series != "" { best.Series = r.Series }
-		if best.Rating == 0 && r.Rating > 0 { best.Rating = r.Rating }
-		if best.Runtime == 0 && r.Runtime > 0 { best.Runtime = r.Runtime }
-		if best.ReleaseDate == "" && r.ReleaseDate != "" { best.ReleaseDate = r.ReleaseDate }
-		if best.Trailer == "" && r.Trailer != "" { best.Trailer = r.Trailer }
+		if best.Plot == "" && r.Plot != "" {
+			best.Plot = r.Plot
+		}
+		if best.OriginalTitle == "" && r.OriginalTitle != "" {
+			best.OriginalTitle = r.OriginalTitle
+		}
+		if best.Director == "" && r.Director != "" {
+			best.Director = r.Director
+		}
+		if best.Studio == "" && r.Studio != "" {
+			best.Studio = r.Studio
+		}
+		if best.Label == "" && r.Label != "" {
+			best.Label = r.Label
+		}
+		if best.Series == "" && r.Series != "" {
+			best.Series = r.Series
+		}
+		if best.Rating == 0 && r.Rating > 0 {
+			best.Rating = r.Rating
+		}
+		if best.Runtime == 0 && r.Runtime > 0 {
+			best.Runtime = r.Runtime
+		}
+		if best.ReleaseDate == "" && r.ReleaseDate != "" {
+			best.ReleaseDate = r.ReleaseDate
+		}
+		if best.Trailer == "" && r.Trailer != "" {
+			best.Trailer = r.Trailer
+		}
 
 		// 剧照合并去重
 		for _, img := range r.PreviewImages {
 			exists := false
 			for _, bi := range best.PreviewImages {
-				if bi == img { exists = true; break }
+				if bi == img {
+					exists = true
+					break
+				}
 			}
 			if !exists {
 				best.PreviewImages = append(best.PreviewImages, img)
@@ -178,7 +215,10 @@ func mergeResults(results []*ScrapeResult, cfg *Config) *ScrapeResult {
 		for _, g := range r.Genres {
 			exists := false
 			for _, bg := range best.Genres {
-				if bg == g { exists = true; break }
+				if bg == g {
+					exists = true
+					break
+				}
 			}
 			if !exists {
 				best.Genres = append(best.Genres, g)
@@ -189,7 +229,10 @@ func mergeResults(results []*ScrapeResult, cfg *Config) *ScrapeResult {
 		for _, u := range r.Urls {
 			exists := false
 			for _, bu := range best.Urls {
-				if bu == u { exists = true; break }
+				if bu == u {
+					exists = true
+					break
+				}
 			}
 			if !exists {
 				best.Urls = append(best.Urls, u)
@@ -200,8 +243,46 @@ func mergeResults(results []*ScrapeResult, cfg *Config) *ScrapeResult {
 	return &best
 }
 
-// actorSourcePriority 演员数据来源优先级：数字越小越可信
-// JavStash 是社区维护，演员最准，排第一
+// sourcePosterPriority 竖版海报优先级（数字越小越优先）
+// JavStash 的 Scene.images 是横版图，作为 poster 只兜底
+func sourcePosterPriority(source string) int {
+	switch {
+	case strings.Contains(source, "DMM"):
+		return 1
+	case strings.Contains(source, "FANZA"):
+		return 1
+	case strings.Contains(source, "JavBus"):
+		return 2
+	case strings.Contains(source, "JAV321"):
+		return 3
+	case strings.HasPrefix(source, "javstash"):
+		return 10
+	default:
+		return 5
+	}
+}
+
+// sourceFanartPriority 横版背景图优先级
+// JavStash 的图天然是横版，排第一
+func sourceFanartPriority(source string) int {
+	switch {
+	case strings.HasPrefix(source, "javstash"):
+		return 1
+	case strings.Contains(source, "DMM"):
+		return 2
+	case strings.Contains(source, "FANZA"):
+		return 2
+	case strings.Contains(source, "JAV321"):
+		return 3
+	case strings.Contains(source, "JavBus"):
+		return 10
+	default:
+		return 5
+	}
+}
+
+// actorSourcePriority 演员数据来源优先级
+// JavStash 是社区维护的数据库，演员最准
 func actorSourcePriority(source string) int {
 	switch {
 	case strings.HasPrefix(source, "javstash"):
@@ -217,6 +298,31 @@ func actorSourcePriority(source string) int {
 	default:
 		return 5
 	}
+}
+
+// sortByChinese 有中文优先，其次按字段完整度
+func sortByChinese(results []*ScrapeResult, preferChinese bool) []*ScrapeResult {
+	sorted := make([]*ScrapeResult, len(results))
+	copy(sorted, results)
+
+	for i := 0; i < len(sorted); i++ {
+		for j := i + 1; j < len(sorted); j++ {
+			si := completeness(sorted[i])
+			sj := completeness(sorted[j])
+			if preferChinese {
+				ci := boolToInt(sorted[i].HasChinese)
+				cj := boolToInt(sorted[j].HasChinese)
+				if cj > ci || (cj == ci && sj > si) {
+					sorted[i], sorted[j] = sorted[j], sorted[i]
+				}
+			} else {
+				if sj > si {
+					sorted[i], sorted[j] = sorted[j], sorted[i]
+				}
+			}
+		}
+	}
+	return sorted
 }
 
 func completeness(r *ScrapeResult) int {
