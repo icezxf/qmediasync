@@ -213,3 +213,15 @@ func (f *FS115) Upload(localPath, remotePath string) error {
 	_, err = f.client.Upload(f.ctx, localPath, parentDetail.FileId, "", "")
 	return err
 }
+
+func (f *FS115) GetURL(path string) (string, error) {
+	detail, err := f.client.GetFsDetailByPath(f.ctx, path)
+	if err != nil || detail == nil || detail.FileId == "" {
+		return "", fmt.Errorf("获取文件详情失败: %s", path)
+	}
+	url := f.client.GetDownloadUrl(f.ctx, detail.PickCode, v115open.DEFAULTUA, false)
+	if url == "" {
+		return "", fmt.Errorf("获取直链失败: %s", path)
+	}
+	return url, nil
+}
