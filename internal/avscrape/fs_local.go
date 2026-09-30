@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 
 	"Q115-STRM/internal/helpers"
+	"Q115-STRM/internal/models"
 )
 
 type FSLocal struct{}
@@ -105,4 +106,23 @@ func (f *FSLocal) Download(remotePath, localPath string) error {
 
 func (f *FSLocal) Upload(localPath, remotePath string) error {
 	return helpers.CopyFile(localPath, remotePath)
+}
+
+// QueueUploads 本地直接复制，走上传队列只是为了统一逻辑
+func (f *FSLocal) QueueUploads(files []LocalFile, dstDir string, accountId uint, sourceType string) (int, error) {
+	if len(files) == 0 {
+		return 0, nil
+	}
+	count := 0
+	for _, file := range files {
+		remotePath := filepath.Join(dstDir, filepath.FromSlash(file.RemoteName))
+		fileName := filepath.Base(file.RemoteName)
+		if err := models.AddUploadTaskFromAV(accountId, models.SourceType(sourceType), fileName, file.LocalPath, remotePath, filepath.Dir(remotePath)); err != nil {
+			helpers.AppLogger.Warnf("[AV上传队列] %s 加入队列失败: %v", file.RemoteName, err)
+			continue
+		}
+		helpers.AppLogger.Infof("[AV上传队列] %s 已加入队列 (remote=%s)", file.RemoteName, remotePath)
+		count++
+	}
+	return count, nil
 }
