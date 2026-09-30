@@ -25,7 +25,6 @@ func (s *Service) Scrape(code string) (*ScrapeResult, error) {
 	}
 	var allResults []*ScrapeResult
 
-	// MetaTube
 	if cfg.EnableMetaTube && cfg.MetaTubeServer != "" {
 		mt := NewMetaTubeClient(cfg.MetaTubeServer)
 		hits, err := mt.Search(code)
@@ -45,7 +44,6 @@ func (s *Service) Scrape(code string) (*ScrapeResult, error) {
 		}
 	}
 
-	// JavStash
 	if cfg.EnableJavStash {
 		js := NewJavStashClient(cfg.JavStashEndpoint, cfg.JavStashAPIKey)
 		hits, err := js.Search(code)
@@ -60,7 +58,6 @@ func (s *Service) Scrape(code string) (*ScrapeResult, error) {
 
 	best := mergeResults(allResults, cfg)
 
-	// 翻译
 	if cfg.EnableTranslate && !best.HasChinese {
 		tr := NewTranslator(cfg.TranslateEngine, cfg.TranslateTarget)
 		tr.TranslateResult(best)
@@ -68,8 +65,20 @@ func (s *Service) Scrape(code string) (*ScrapeResult, error) {
 	}
 
 	media := MediaFromResult(best)
-	if err := s.DB.Create(media).Error; err != nil {
-		return nil, err
+
+	// Upsert
+	var existing models.AVMedia
+	err = s.DB.Where("code = ?", media.Code).First(&existing).Error
+	if err == nil {
+		media.ID = existing.ID
+		media.CreatedAt = existing.CreatedAt
+		if err := s.DB.Save(media).Error; err != nil {
+			return nil, err
+		}
+	} else {
+		if err := s.DB.Create(media).Error; err != nil {
+			return nil, err
+		}
 	}
 	return best, nil
 }
