@@ -61,20 +61,8 @@ func (s *Scanner) Scan(pathID uint) error {
 		}
 		helpers.AppLogger.Infof("[AV扫描] 处理文件 %s → 番号 %s", fullPath, code)
 
-		// 已刮削过
-		var existing models.AVMedia
-		if err := s.DB.Where("code = ?", code).First(&existing).Error; err == nil {
-			if path.Mode == "scrape_and_rename" || path.Mode == "rename_only" {
-				if err := s.organize(fs, &path, &existing, fullPath, name); err != nil {
-					s.recordTask(code, fullPath, "failed", err.Error(), "")
-				} else {
-					s.recordTask(code, fullPath, "done", "已存在，重新整理完成", "")
-				}
-			}
-			continue
-		}
-
-		// 刮削
+		// ===== 无条件重新刮削 =====
+		// 只要文件还在源目录里，不管数据库有没有，都重新刮一遍
 		result, err := s.Svc.Scrape(code)
 		if err != nil {
 			s.recordTask(code, fullPath, "failed", err.Error(), "")
@@ -87,7 +75,7 @@ func (s *Scanner) Scan(pathID uint) error {
 			continue
 		}
 
-		// 整理
+		// 整理文件
 		if path.Mode == "scrape_and_rename" || path.Mode == "rename_only" {
 			media := MediaFromResult(result)
 			if err := s.organize(fs, &path, media, fullPath, name); err != nil {
@@ -120,7 +108,6 @@ func (s *Scanner) writeMediaFiles(fs FileSystem, path *models.AVPath, r *ScrapeR
 
 	// 3. 背景图（多源 fallback）
 	if !downloadFirstSuccess(fs, r.FanartCandidates, dir+"/fanart.jpg", "fanart") {
-		// 没有 fanart 就用第一张剧照当背景
 		if len(r.PreviewImages) > 0 {
 			if data, err := downloadImage(r.PreviewImages[0]); err == nil {
 				_ = fs.Write(dir+"/fanart.jpg", data)
