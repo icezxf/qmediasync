@@ -133,3 +133,11 @@ func (f *FSOpenList) Upload(localPath, remotePath string) error {
 	_, err := f.client.Upload(localPath, remotePath)
 	return err
 }
+
+func (f *FSOpenList) GetURL(path string) (string, error) {
+	url := f.client.GetRawUrl(path)
+	if url == "" {
+		return "", fmt.Errorf("获取直链失败: %s", path)
+	}
+	return url, nil
+}
