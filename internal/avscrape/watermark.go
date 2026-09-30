@@ -2,83 +2,132 @@ package avscrape
 
 import (
 	"bytes"
+	"embed"
 	"image"
-	"image/color"
+	"image/draw"
 	"image/jpeg"
-	"os"
-
-	"github.com/fogleman/gg"
+	"image/png"
 
 	"Q115-STRM/internal/helpers"
 )
 
-var watermarkFontPaths = []string{
-	"/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
-	"/usr/share/fonts/noto-cjk/NotoSansCJKsc-Regular.otf",
-	"/usr/share/fonts/noto/NotoSansCJK-Regular.ttc",
-	"/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-	"/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-}
+//go:embed 4k.png 8k.png 字幕.png 无码.png 流出.png 破解.png
+var watermarkFS embed.FS
 
-func findFontPath() string {
-	for _, p := range watermarkFontPaths {
-		if _, err := os.Stat(p); err == nil {
-			return p
-		}
-	}
-	return ""
-}
-
+// WatermarkItem 单个水印项
 type WatermarkItem struct {
-	Text     string
-	BgColor  color.RGBA
-	FgColor  color.RGBA
-	FontSize float64
-	Bold     bool
+	PngName string // PNG 文件名（相对于 internal/avscrape/ 目录）
+	Label   string // 日志显示用
 }
 
-// buildWatermarks 按 MDC-NG 风格构建水印
-// 4K/8K：黄底黑字（徽章感）
-// 其他：深色圆角矩形 + 白字
+// buildWatermarks 根据配置 + tag 生成水印列表
 func buildWatermarks(r *ScrapeResult, cfg *Config) []WatermarkItem {
 	var items []WatermarkItem
+
 	allTags := append([]string{}, r.Genres...)
 	allTags = append(allTags, r.ExtraTags...)
 	joined := toLower(strings_Join(allTags, ","))
 
+	// 8K 优先于 4K
 	if cfg.Watermark8K && (contains(joined, "8k") || r.Resolution == "8K") {
-		items = append(items, WatermarkItem{
-			Text: "8K", BgColor: color.RGBA{255, 102, 0, 255}, FgColor: color.RGBA{255, 255, 255, 255}, FontSize: 40, Bold: true,
-		})
+		items = append(items, WatermarkItem{PngName: "8k.png", Label: "8K"})
 	} else if cfg.Watermark4K && (contains(joined, "4k") || r.Resolution == "4K") {
-		items = append(items, WatermarkItem{
-			Text: "4K", BgColor: color.RGBA{255, 204, 0, 255}, FgColor: color.RGBA{0, 0, 0, 255}, FontSize: 40, Bold: true,
-		})
+		items = append(items, WatermarkItem{PngName: "4k.png", Label: "4K"})
 	}
 	if cfg.WatermarkSubtitle && (r.HasChineseSub || contains(joined, "字幕") || contains(joined, "中字")) {
-		items = append(items, WatermarkItem{
-			Text: "字幕", BgColor: color.RGBA{34, 170, 68, 255}, FgColor: color.RGBA{255, 255, 255, 255}, FontSize: 28,
-		})
+		items = append(items, WatermarkItem{PngName: "字幕.png", Label: "字幕"})
 	}
 	if cfg.WatermarkCrack && contains(joined, "破解") {
-		items = append(items, WatermarkItem{
-			Text: "破解", BgColor: color.RGBA{204, 0, 34, 255}, FgColor: color.RGBA{255, 255, 255, 255}, FontSize: 28,
-		})
+		items = append(items, WatermarkItem{PngName: "破解.png", Label: "破解"})
 	}
 	if cfg.WatermarkLeak && contains(joined, "流出") {
-		items = append(items, WatermarkItem{
-			Text: "流出", BgColor: color.RGBA{255, 68, 0, 255}, FgColor: color.RGBA{255, 255, 255, 255}, FontSize: 28,
-		})
+		items = append(items, WatermarkItem{PngName: "流出.png", Label: "流出"})
 	}
 	if cfg.WatermarkUncensored && (r.IsUncensored || contains(joined, "无码")) {
-		items = append(items, WatermarkItem{
-			Text: "无码", BgColor: color.RGBA{0, 102, 204, 255}, FgColor: color.RGBA{255, 255, 255, 255}, FontSize: 28,
-		})
+		items = append(items, WatermarkItem{PngName: "无码.png", Label: "无码"})
 	}
 	return items
 }
 
-// 自写的小工具（避免 import strings 与项目其他包冲突）
+// applyWatermark 把 PNG 水印按顺序叠加到图片左上角
+func applyWatermark(imgData []byte, items []WatermarkItem) ([]byte, error) {
+	if len(items) == 0 {
+		return imgData, nil
+	}
+
+	src, _, err := image.Decode(bytes.NewReader(imgData))
+	if err != nil {
+		return imgData, err
+	}
+	bounds := src.Bounds()
+	w := bounds.Dx()
+	h := bounds.Dy()
+
+	dst := image.NewRGBA(image.Rect(0, 0, w, h))
+	draw.Draw(dst, dst.Bounds(), src, bounds.Min, draw.Src)
+
+	padX := w * 15 / 1000
+	padY := h * 15 / 1000
+	curX := padX
+	curY := padY
+
+	for _, item := range items {
+		pngData, err := watermarkFS.ReadFile(item.PngName)
+		if err != nil {
+			helpers.AppLogger.Warnf("[AV水印] 读取水印图失败: %s => %v", item.PngName, err)
+			continue
+		}
+		wmImg, err := png.Decode(bytes.NewReader(pngData))
+		if err != nil {
+			helpers.AppLogger.Warnf("[AV水印] 解码水印图失败: %s => %v", item.PngName, err)
+			continue
+		}
+
+		// 水印宽度 = 底图宽度的 8%
+		wmW := wmImg.Bounds().Dx()
+		wmH := wmImg.Bounds().Dy()
+		targetW := w * 8 / 100
+		if targetW < 60 {
+			targetW = 60
+		}
+		scale := float64(targetW) / float64(wmW)
+		targetH := int(float64(wmH) * scale)
+
+		scaled := resizeImage(wmImg, targetW, targetH)
+		draw.Draw(dst, image.Rect(curX, curY, curX+targetW, curY+targetH), scaled, image.Point{}, draw.Over)
+
+		curX += targetW + padX/2
+		// 一行放不下就换行
+		if curX+targetW > w-padX {
+			curX = padX
+			curY += targetH + padY/2
+		}
+	}
+
+	var out bytes.Buffer
+	if err := jpeg.Encode(&out, dst, &jpeg.Options{Quality: 92}); err != nil {
+		return imgData, err
+	}
+	return out.Bytes(), nil
+}
+
+// resizeImage 简单的最近邻缩放
+func resizeImage(src image.Image, newW, newH int) image.Image {
+	dst := image.NewRGBA(image.Rect(0, 0, newW, newH))
+	srcBounds := src.Bounds()
+	srcW := srcBounds.Dx()
+	srcH := srcBounds.Dy()
+	for y := 0; y < newH; y++ {
+		for x := 0; x < newW; x++ {
+			srcX := srcBounds.Min.X + x*srcW/newW
+			srcY := srcBounds.Min.Y + y*srcH/newH
+			dst.Set(x, y, src.At(srcX, srcY))
+		}
+	}
+	return dst
+}
+
+// 小工具
 func strings_Join(arr []string, sep string) string {
 	if len(arr) == 0 {
 		return ""
@@ -115,82 +164,4 @@ func contains(s, sub string) bool {
 		}
 	}
 	return false
-}
-
-// applyWatermark 左上角紧凑排列
-func applyWatermark(imgData []byte, items []WatermarkItem) ([]byte, error) {
-	if len(items) == 0 {
-		return imgData, nil
-	}
-	fontPath := findFontPath()
-	if fontPath == "" {
-		helpers.AppLogger.Warnf("[AV水印] 未找到中文字体，跳过水印")
-		return imgData, nil
-	}
-
-	src, _, err := image.Decode(bytes.NewReader(imgData))
-	if err != nil {
-		return imgData, err
-	}
-	bounds := src.Bounds()
-	w := bounds.Dx()
-	h := bounds.Dy()
-
-	dc := gg.NewContext(w, h)
-	dc.DrawImage(src, 0, 0)
-
-	// 边距按图片宽度比例，MDC-NG 是左上角紧贴
-	padX := float64(w) * 0.015
-	padY := float64(h) * 0.015
-	curX := padX
-	curY := padY
-	rowH := 0.0
-	gap := padX * 0.4
-
-	for _, item := range items {
-		if err := dc.LoadFontFace(fontPath, item.FontSize); err != nil {
-			continue
-		}
-		textW, textH := dc.MeasureString(item.Text)
-		// 4K/8K 做成正方形徽章感
-		var boxW, boxH float64
-		if item.Text == "4K" || item.Text == "8K" {
-			size := item.FontSize * 1.7
-			boxW = size
-			boxH = size
-		} else {
-			boxW = textW + item.FontSize*0.9
-			boxH = textH + item.FontSize*0.45
-		}
-
-		if curX+boxW > float64(w)-padX {
-			curX = padX
-			curY += rowH + gap
-			rowH = 0
-		}
-
-		// 背景
-		dc.SetColor(item.BgColor)
-		if item.Text == "4K" || item.Text == "8K" {
-			dc.DrawRectangle(curX, curY, boxW, boxH)
-		} else {
-			dc.DrawRoundedRectangle(curX, curY, boxW, boxH, boxH*0.2)
-		}
-		dc.Fill()
-
-		// 文字
-		dc.SetColor(item.FgColor)
-		dc.DrawStringAnchored(item.Text, curX+boxW/2, curY+boxH/2, 0.5, 0.5)
-
-		if boxH > rowH {
-			rowH = boxH
-		}
-		curX += boxW + gap
-	}
-
-	var out bytes.Buffer
-	if err := jpeg.Encode(&out, dc.Image(), &jpeg.Options{Quality: 92}); err != nil {
-		return imgData, err
-	}
-	return out.Bytes(), nil
 }
