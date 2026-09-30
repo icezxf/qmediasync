@@ -85,6 +85,7 @@ func (s *Service) Scrape(code string) (*ScrapeResult, error) {
 
 // mergeResults 合并多个源的结果
 // 图片优先级：JavStash 海报 > DMM/FANZA > JAV321 > JavBus
+// mergeResults 合并多个源的结果
 func mergeResults(results []*ScrapeResult, cfg *Config) *ScrapeResult {
 	sorted := sortByChinese(results, cfg.PreferChineseSource)
 
@@ -92,6 +93,7 @@ func mergeResults(results []*ScrapeResult, cfg *Config) *ScrapeResult {
 	best.PosterCandidates = []string{}
 	best.FanartCandidates = []string{}
 
+	// 图片候选池
 	type candidate struct {
 		url      string
 		priority int
@@ -109,15 +111,9 @@ func mergeResults(results []*ScrapeResult, cfg *Config) *ScrapeResult {
 		}
 	}
 
-	// 按优先级排序（数字越小越优先）
-	sort.SliceStable(posterList, func(i, j int) bool {
-		return posterList[i].priority < posterList[j].priority
-	})
-	sort.SliceStable(fanartList, func(i, j int) bool {
-		return fanartList[i].priority < fanartList[j].priority
-	})
+	sort.SliceStable(posterList, func(i, j int) bool { return posterList[i].priority < posterList[j].priority })
+	sort.SliceStable(fanartList, func(i, j int) bool { return fanartList[i].priority < fanartList[j].priority })
 
-	// 去重后填充候选列表
 	seenPoster := map[string]bool{}
 	for _, c := range posterList {
 		if !seenPoster[c.url] {
@@ -132,8 +128,6 @@ func mergeResults(results []*ScrapeResult, cfg *Config) *ScrapeResult {
 			seenFanart[c.url] = true
 		}
 	}
-
-	// Poster/Fanart 字段本身保留优先级最高的（用于 NFO 展示）
 	if len(best.PosterCandidates) > 0 {
 		best.Poster = best.PosterCandidates[0]
 	}
@@ -141,76 +135,42 @@ func mergeResults(results []*ScrapeResult, cfg *Config) *ScrapeResult {
 		best.Fanart = best.FanartCandidates[0]
 	}
 
-	// 合并其他字段（按顺序取第一个非空的）
+	// ===== 关键修复：演员只取最可信的一个源，不合并 =====
+	bestActors := []Actor{}
+	bestActorPriority := 999
+	for _, r := range sorted {
+		if len(r.Actors) == 0 {
+			continue
+		}
+		p := actorSourcePriority(r.Source)
+		if p < bestActorPriority {
+			bestActorPriority = p
+			bestActors = r.Actors
+		}
+	}
+	best.Actors = bestActors
+
+	// ===== 合并其他字段（按优先级取第一个非空）=====
 	for _, r := range sorted[1:] {
-		if best.Plot == "" && r.Plot != "" {
-			best.Plot = r.Plot
-		}
-		if best.OriginalTitle == "" && r.OriginalTitle != "" {
-			best.OriginalTitle = r.OriginalTitle
-		}
-		if best.Director == "" && r.Director != "" {
-			best.Director = r.Director
-		}
-		if best.Studio == "" && r.Studio != "" {
-			best.Studio = r.Studio
-		}
-		if best.Label == "" && r.Label != "" {
-			best.Label = r.Label
-		}
-		if best.Series == "" && r.Series != "" {
-			best.Series = r.Series
-		}
-		if best.Rating == 0 && r.Rating > 0 {
-			best.Rating = r.Rating
-		}
-		if best.Runtime == 0 && r.Runtime > 0 {
-			best.Runtime = r.Runtime
-		}
-		if best.ReleaseDate == "" && r.ReleaseDate != "" {
-			best.ReleaseDate = r.ReleaseDate
-		}
-		if best.Trailer == "" && r.Trailer != "" {
-			best.Trailer = r.Trailer
-		}
+		if best.Plot == "" && r.Plot != "" { best.Plot = r.Plot }
+		if best.OriginalTitle == "" && r.OriginalTitle != "" { best.OriginalTitle = r.OriginalTitle }
+		if best.Director == "" && r.Director != "" { best.Director = r.Director }
+		if best.Studio == "" && r.Studio != "" { best.Studio = r.Studio }
+		if best.Label == "" && r.Label != "" { best.Label = r.Label }
+		if best.Series == "" && r.Series != "" { best.Series = r.Series }
+		if best.Rating == 0 && r.Rating > 0 { best.Rating = r.Rating }
+		if best.Runtime == 0 && r.Runtime > 0 { best.Runtime = r.Runtime }
+		if best.ReleaseDate == "" && r.ReleaseDate != "" { best.ReleaseDate = r.ReleaseDate }
+		if best.Trailer == "" && r.Trailer != "" { best.Trailer = r.Trailer }
 
 		// 剧照合并去重
 		for _, img := range r.PreviewImages {
 			exists := false
 			for _, bi := range best.PreviewImages {
-				if bi == img {
-					exists = true
-					break
-				}
+				if bi == img { exists = true; break }
 			}
 			if !exists {
 				best.PreviewImages = append(best.PreviewImages, img)
-			}
-		}
-
-		// 演员合并去重
-		for _, a := range r.Actors {
-			found := false
-			for i := range best.Actors {
-				if best.Actors[i].Name == a.Name {
-					if best.Actors[i].Image == "" && a.Image != "" {
-						best.Actors[i].Image = a.Image
-					}
-					if best.Actors[i].Birthday == "" && a.Birthday != "" {
-						best.Actors[i].Birthday = a.Birthday
-					}
-					if best.Actors[i].Country == "" && a.Country != "" {
-						best.Actors[i].Country = a.Country
-					}
-					if best.Actors[i].Height == 0 && a.Height > 0 {
-						best.Actors[i].Height = a.Height
-					}
-					found = true
-					break
-				}
-			}
-			if !found {
-				best.Actors = append(best.Actors, a)
 			}
 		}
 
@@ -218,10 +178,7 @@ func mergeResults(results []*ScrapeResult, cfg *Config) *ScrapeResult {
 		for _, g := range r.Genres {
 			exists := false
 			for _, bg := range best.Genres {
-				if bg == g {
-					exists = true
-					break
-				}
+				if bg == g { exists = true; break }
 			}
 			if !exists {
 				best.Genres = append(best.Genres, g)
@@ -232,10 +189,7 @@ func mergeResults(results []*ScrapeResult, cfg *Config) *ScrapeResult {
 		for _, u := range r.Urls {
 			exists := false
 			for _, bu := range best.Urls {
-				if bu == u {
-					exists = true
-					break
-				}
+				if bu == u { exists = true; break }
 			}
 			if !exists {
 				best.Urls = append(best.Urls, u)
@@ -246,48 +200,23 @@ func mergeResults(results []*ScrapeResult, cfg *Config) *ScrapeResult {
 	return &best
 }
 
-// sourceImagePriority 图片来源优先级，数字越小越优先
-// JavStash 的图无防盗链，最稳定，放第一位
-func sourceImagePriority(source string) int {
+// actorSourcePriority 演员数据来源优先级：数字越小越可信
+// JavStash 是社区维护，演员最准，排第一
+func actorSourcePriority(source string) int {
 	switch {
 	case strings.HasPrefix(source, "javstash"):
-		return 1 // JavStash 最优先
-	case strings.Contains(source, "DMM"):
-		return 2 // DMM 质量高，无防盗链
+		return 1
 	case strings.Contains(source, "FANZA"):
+		return 2
+	case strings.Contains(source, "DMM"):
 		return 2
 	case strings.Contains(source, "JAV321"):
 		return 3
 	case strings.Contains(source, "JavBus"):
-		return 10 // JavBus 有防盗链，放最后
+		return 10
 	default:
 		return 5
 	}
-}
-
-// sortByChinese 有中文优先，其次按完整度
-func sortByChinese(results []*ScrapeResult, preferChinese bool) []*ScrapeResult {
-	sorted := make([]*ScrapeResult, len(results))
-	copy(sorted, results)
-
-	for i := 0; i < len(sorted); i++ {
-		for j := i + 1; j < len(sorted); j++ {
-			si := completeness(sorted[i])
-			sj := completeness(sorted[j])
-			if preferChinese {
-				ci := boolToInt(sorted[i].HasChinese)
-				cj := boolToInt(sorted[j].HasChinese)
-				if cj > ci || (cj == ci && sj > si) {
-					sorted[i], sorted[j] = sorted[j], sorted[i]
-				}
-			} else {
-				if sj > si {
-					sorted[i], sorted[j] = sorted[j], sorted[i]
-				}
-			}
-		}
-	}
-	return sorted
 }
 
 func completeness(r *ScrapeResult) int {
