@@ -16,8 +16,11 @@ type Config struct {
 	JavStashEndpoint    string `json:"javstash_endpoint"`
 	JavStashAPIKey      string `json:"javstash_api_key"`
 	EnableTranslate     bool   `json:"enable_translate"`
-	TranslateEngine     string `json:"translate_engine"`
-	TranslateTarget     string `json:"translate_target"`
+	TranslateEngine     string `json:"translate_engine"`       // deepl / google_free / bing / mymemory
+	TranslateTarget     string `json:"translate_target"`       // zh
+	TranslateDeepLKey   string `json:"translate_deepl_key"`    // DeepL API Key（免费版以 :fx 结尾）
+	TranslateBingKey    string `json:"translate_bing_key"`
+	TranslateBingRegion string `json:"translate_bing_region"`
 	PreferChineseSource bool   `json:"prefer_chinese_source"`
 }
 
@@ -27,7 +30,7 @@ var defaultConfig = Config{
 	EnableJavStash:      false,
 	JavStashEndpoint:    "https://javstash.org/graphql",
 	EnableTranslate:     false,
-	TranslateEngine:     "google_free",
+	TranslateEngine:     "deepl",
 	TranslateTarget:     "zh",
 	PreferChineseSource: true,
 }
