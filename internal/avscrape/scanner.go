@@ -220,7 +220,7 @@ func (s *Scanner) prepareImages(r *ScrapeResult, cfg *Config) (posterData, fanar
 	if len(watermarks) > 0 {
 		names := make([]string, 0, len(watermarks))
 		for _, w := range watermarks {
-			names = append(names, w.Text)
+			names = append(names, w.Label)
 		}
 		helpers.AppLogger.Infof("[AV水印] %s 准备打水印: %v", r.Code, names)
 	}
