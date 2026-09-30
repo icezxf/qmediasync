@@ -3,6 +3,7 @@ package avscrape
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -18,6 +19,8 @@ var videoExts = map[string]bool{
 	".iso": true, ".rmvb": true, ".strm": true,
 }
 
+const maxPreviewImages = 5
+
 type Scanner struct {
 	DB  *gorm.DB
 	Svc *Service
@@ -27,7 +30,6 @@ func NewScanner(db *gorm.DB) *Scanner {
 	return &Scanner{DB: db, Svc: NewService(db)}
 }
 
-// Scan 扫描一个 AV 刮削目录（递归遍历所有子目录）
 func (s *Scanner) Scan(pathID uint) error {
 	var path models.AVPath
 	if err := s.DB.First(&path, pathID).Error; err != nil {
@@ -58,7 +60,6 @@ func (s *Scanner) Scan(pathID uint) error {
 		}
 		helpers.AppLogger.Infof("[AV扫描] 处理文件 %s → 番号 %s", fullPath, code)
 
-		// 是否已经刮削过
 		var existing models.AVMedia
 		hasExisting := s.DB.Where("code = ?", code).First(&existing).Error == nil
 
@@ -74,16 +75,20 @@ func (s *Scanner) Scan(pathID uint) error {
 			result = r
 		}
 
-		// 按操作方式处理
 		if path.Mode == "scrape_only" {
-			// 仅刮削：不移动文件，元数据写到源目录
-			if err := s.writeMetaFiles(fs, filepath.Dir(fullPath),
-				strings.TrimSuffix(name, filepath.Ext(name)), result); err != nil {
+			// 仅刮削：元数据写到源目录（走上传队列）
+			tmpDir := filepath.Dir(fullPath)
+			baseName := strings.TrimSuffix(name, filepath.Ext(name))
+			files, err := s.prepareMetaFiles(baseName, result)
+			if err != nil {
+				s.recordTask(code, fullPath, "failed", err.Error(), result.Source)
+				continue
+			}
+			if _, err := fs.QueueUploads(files, tmpDir, path.AccountID, path.SourceType); err != nil {
 				s.recordTask(code, fullPath, "failed", err.Error(), result.Source)
 				continue
 			}
 		} else if path.Mode == "scrape_and_rename" || path.Mode == "rename_only" {
-			// 刮削和整理 / 仅整理：移动到目标目录，元数据写到目标目录
 			if err := s.organize(fs, &path, MediaFromResult(result), fullPath, name, result); err != nil {
 				s.recordTask(code, fullPath, "failed", err.Error(), result.Source)
 				continue
@@ -101,7 +106,7 @@ func (s *Scanner) Scan(pathID uint) error {
 	return nil
 }
 
-// organize 按命名模板整理文件到目标路径，并在目标目录里生成 NFO 和图片
+// organize 视频移动 + 元数据入上传队列
 func (s *Scanner) organize(fs FileSystem, path *models.AVPath, media *models.AVMedia, videoPath, videoName string, r *ScrapeResult) error {
 	relDir := renderTemplate(path.NameTemplate, media)
 	if relDir == "" {
@@ -116,7 +121,7 @@ func (s *Scanner) organize(fs FileSystem, path *models.AVPath, media *models.AVM
 	newName := media.Code + ext
 	newVideoPath := targetDir + "/" + newName
 
-	// 1. 移动/复制视频到目标目录
+	// 1. 移动/复制视频
 	if !fs.Exists(newVideoPath) {
 		switch path.MoveMethod {
 		case "copy":
@@ -136,14 +141,18 @@ func (s *Scanner) organize(fs FileSystem, path *models.AVPath, media *models.AVM
 		}
 	}
 
-	// 2. 在目标目录里写 NFO 和图片（覆盖旧文件）
+	// 2. 元数据先写本地临时目录，再入上传队列
 	if r != nil {
-		if err := s.writeMetaFiles(fs, targetDir, media.Code, r); err != nil {
+		files, err := s.prepareMetaFiles(media.Code, r)
+		if err != nil {
 			return err
+		}
+		if _, err := fs.QueueUploads(files, targetDir, path.AccountID, path.SourceType); err != nil {
+			return fmt.Errorf("加入上传队列失败: %w", err)
 		}
 	}
 
-	// 3. 移动模式：尝试清理源目录（含残留的 NFO/图片）
+	// 3. 清理源目录
 	if path.MoveMethod != "copy" {
 		s.cleanupSourceDir(fs, filepath.Dir(videoPath), path.SourcePath)
 	}
@@ -151,44 +160,74 @@ func (s *Scanner) organize(fs FileSystem, path *models.AVPath, media *models.AVM
 	return nil
 }
 
-// writeMetaFiles 在指定目录里写 NFO、图片、剧照、预告片
-func (s *Scanner) writeMetaFiles(fs FileSystem, dir, baseName string, r *ScrapeResult) error {
-	// 1. NFO
-	if err := fs.Write(dir+"/"+baseName+".nfo", []byte(GenerateNFO(r))); err != nil {
-		return fmt.Errorf("写 NFO 失败: %w", err)
+// prepareMetaFiles 生成元数据到本地临时目录
+// 注意：临时文件由上传队列消费后清理，这里不删
+func (s *Scanner) prepareMetaFiles(baseName string, r *ScrapeResult) ([]LocalFile, error) {
+	if r == nil {
+		return nil, nil
 	}
-	// 2. 海报
+
+	tmpDir := filepath.Join(helpers.ConfigDir, "tmp", "avscrape", baseName)
+	os.RemoveAll(tmpDir)
+	if err := os.MkdirAll(tmpDir, 0755); err != nil {
+		return nil, fmt.Errorf("创建临时目录失败: %w", err)
+	}
+
+	files := []LocalFile{}
+
+	// NFO
+	nfoPath := filepath.Join(tmpDir, baseName+".nfo")
+	if err := os.WriteFile(nfoPath, []byte(GenerateNFO(r)), 0644); err != nil {
+		return nil, fmt.Errorf("写 NFO 失败: %w", err)
+	}
+	files = append(files, LocalFile{LocalPath: nfoPath, RemoteName: baseName + ".nfo"})
+
+	// 海报
 	if r.Poster != "" {
-		if data, err := downloadImage(r.Poster); err == nil {
-			_ = fs.Write(dir+"/poster.jpg", data)
+		p := filepath.Join(tmpDir, "poster.jpg")
+		if err := helpers.DownloadFile(r.Poster, p, ""); err == nil {
+			files = append(files, LocalFile{LocalPath: p, RemoteName: "poster.jpg"})
+		} else {
+			helpers.AppLogger.Warnf("[AV元数据] 下载 poster 失败: %v", err)
 		}
 	}
-	// 3. 背景图
+	// 背景图
 	if r.Fanart != "" {
-		if data, err := downloadImage(r.Fanart); err == nil {
-			_ = fs.Write(dir+"/fanart.jpg", data)
+		p := filepath.Join(tmpDir, "fanart.jpg")
+		if err := helpers.DownloadFile(r.Fanart, p, ""); err == nil {
+			files = append(files, LocalFile{LocalPath: p, RemoteName: "fanart.jpg"})
+		} else {
+			helpers.AppLogger.Warnf("[AV元数据] 下载 fanart 失败: %v", err)
 		}
 	}
-	// 4. 剧照
+	// 剧照（最多 maxPreviewImages 张）
 	if len(r.PreviewImages) > 0 {
-		_ = fs.MkdirAll(dir + "/extrafanart")
-		for i, url := range r.PreviewImages {
-			if data, err := downloadImage(url); err == nil {
-				_ = fs.Write(fmt.Sprintf("%s/extrafanart/scene-%02d.jpg", dir, i+1), data)
+		count := len(r.PreviewImages)
+		if count > maxPreviewImages {
+			count = maxPreviewImages
+		}
+		for i := 0; i < count; i++ {
+			url := r.PreviewImages[i]
+			remoteName := fmt.Sprintf("extrafanart/scene-%02d.jpg", i+1)
+			localPath := filepath.Join(tmpDir, fmt.Sprintf("scene-%02d.jpg", i+1))
+			if err := helpers.DownloadFile(url, localPath, ""); err == nil {
+				files = append(files, LocalFile{LocalPath: localPath, RemoteName: remoteName})
+			} else {
+				helpers.AppLogger.Warnf("[AV元数据] 下载剧照 %d 失败: %v", i+1, err)
 			}
 		}
 	}
-	// 5. 预告片
+	// 预告片
 	if r.Trailer != "" {
-		_ = fs.MkdirAll(dir + "/trailers")
-		_ = fs.Write(dir+"/trailers/trailer.strm", []byte(r.Trailer))
+		p := filepath.Join(tmpDir, "trailer.strm")
+		if err := os.WriteFile(p, []byte(r.Trailer), 0644); err == nil {
+			files = append(files, LocalFile{LocalPath: p, RemoteName: "trailers/trailer.strm"})
+		}
 	}
-	return nil
+
+	return files, nil
 }
 
-// cleanupSourceDir 清理源目录
-// 如果源目录下已经没有视频文件，就把整个目录删掉（含残留的 NFO/图片）
-// 但不会删除 SourcePath 本身
 func (s *Scanner) cleanupSourceDir(fs FileSystem, sourceDir, rootSourcePath string) {
 	if strings.TrimRight(sourceDir, "/") == strings.TrimRight(rootSourcePath, "/") {
 		return
@@ -216,7 +255,6 @@ func (s *Scanner) cleanupSourceDir(fs FileSystem, sourceDir, rootSourcePath stri
 	helpers.AppLogger.Infof("[AV扫描] 已清理源目录: %s", sourceDir)
 }
 
-// recordTask 记录任务
 func (s *Scanner) recordTask(code, filePath, status, msg, provider string) {
 	s.DB.Create(&models.AVTask{
 		Code:     code,
@@ -227,7 +265,6 @@ func (s *Scanner) recordTask(code, filePath, status, msg, provider string) {
 	})
 }
 
-// mediaToScrapeResult 从数据库的 AVMedia 反构造 ScrapeResult
 func mediaToScrapeResult(m *models.AVMedia) *ScrapeResult {
 	var genres []string
 	var actors []Actor
@@ -268,7 +305,6 @@ func mediaToScrapeResult(m *models.AVMedia) *ScrapeResult {
 	}
 }
 
-// walkVideos 递归遍历目录，返回所有视频文件的完整路径
 func walkVideos(fs FileSystem, root string, depth int) ([]string, error) {
 	if depth > 10 {
 		return nil, nil
@@ -300,7 +336,6 @@ func walkVideos(fs FileSystem, root string, depth int) ([]string, error) {
 	return videos, nil
 }
 
-// renderTemplate 渲染命名模板
 func renderTemplate(tpl string, media *models.AVMedia) string {
 	if tpl == "" {
 		return media.Code
@@ -312,16 +347,17 @@ func renderTemplate(tpl string, media *models.AVMedia) string {
 		_ = json.Unmarshal([]byte(media.Actors), &actors)
 	}
 	for i, a := range actors {
-		if a.Name == "" {
+		name := pickBestActorName(a)
+		if name == "" {
 			continue
 		}
 		if firstActor == "" {
-			firstActor = a.Name
+			firstActor = name
 		}
 		if i > 0 {
 			allActors += ", "
 		}
-		allActors += a.Name
+		allActors += name
 	}
 
 	replacer := strings.NewReplacer(
@@ -353,7 +389,27 @@ func renderTemplate(tpl string, media *models.AVMedia) string {
 	return strings.Join(cleaned, "/")
 }
 
-// sanitizePath 去掉路径里不允许的字符
+func pickBestActorName(a Actor) string {
+	for _, alias := range a.Aliases {
+		if isASCII(alias) && len(alias) > 0 {
+			return alias
+		}
+	}
+	if len(a.Aliases) > 0 && a.Aliases[0] != "" {
+		return a.Aliases[0]
+	}
+	return a.Name
+}
+
+func isASCII(s string) bool {
+	for _, r := range s {
+		if r > 127 {
+			return false
+		}
+	}
+	return true
+}
+
 func sanitizePath(s string) string {
 	if s == "" {
 		return ""
@@ -365,7 +421,6 @@ func sanitizePath(s string) string {
 	return strings.TrimSpace(replacer.Replace(s))
 }
 
-// extractYear 从日期字符串里取年份
 func extractYear(date string) string {
 	if len(date) >= 4 {
 		return date[:4]
