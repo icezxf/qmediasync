@@ -99,20 +99,19 @@ func (s *Scanner) Scan(pathID uint) error {
 			continue
 		}
 
-		// 加载配置（水印/tag 开关）
 		cfg, cfgErr := LoadConfig(s.DB)
 		if cfgErr != nil || cfg == nil {
 			def := defaultConfig
 			cfg = &def
 		}
 
-		// 直接在目标目录写元数据（NFO、图片、剧照、预告片）
+		// 直接把所有元数据写到目标目录
 		if err := s.writeMetadataToTarget(fs, targetDir, result, cfg); err != nil {
 			s.recordTask(code, fullPath, "failed", err.Error(), result.Source)
 			continue
 		}
 
-		// 移动视频文件到目标目录
+		// 移动视频
 		if path.Mode == "scrape_and_rename" || path.Mode == "rename_only" {
 			suffix := ""
 			switch result.Resolution {
@@ -135,7 +134,6 @@ func (s *Scanner) Scan(pathID uint) error {
 	return nil
 }
 
-// detectLocalMeta 本地检测
 func (s *Scanner) detectLocalMeta(fs FileSystem, path *models.AVPath, r *ScrapeResult, videoPath string) {
 	cfg, err := LoadConfig(s.DB)
 	if err != nil || cfg == nil {
@@ -163,12 +161,10 @@ func (s *Scanner) detectLocalMeta(fs FileSystem, path *models.AVPath, r *ScrapeR
 	}
 }
 
-// writeMetadataToTarget 直接把所有元数据写到目标目录
+// writeMetadataToTarget 直接把所有元数据写到目标目录（不经过源目录）
 func (s *Scanner) writeMetadataToTarget(fs FileSystem, targetDir string, r *ScrapeResult, cfg *Config) error {
-	// ===== 1. 准备图片（下载 + 打水印）=====
 	posterData, fanartData, thumbData := s.prepareImages(r, cfg)
 
-	// ===== 2. 上传图片到目标目录 =====
 	if posterData != nil {
 		if err := fs.Write(targetDir+"/poster.jpg", posterData); err != nil {
 			helpers.AppLogger.Warnf("[AV元数据] 写 poster 失败: %v", err)
@@ -191,17 +187,14 @@ func (s *Scanner) writeMetadataToTarget(fs FileSystem, targetDir string, r *Scra
 		}
 	}
 
-	// ===== 3. 合并 ExtraTags 到 Genres =====
 	r.Genres = mergeUniqueStrings(r.Genres, r.ExtraTags)
 
-	// ===== 4. 上传 NFO 到目标目录 =====
 	nfoName := r.Code + ".nfo"
 	if err := fs.Write(targetDir+"/"+nfoName, []byte(GenerateNFO(r))); err != nil {
 		return fmt.Errorf("写 NFO 失败: %w", err)
 	}
 	helpers.AppLogger.Infof("[AV元数据] NFO 已上传到目标目录")
 
-	// ===== 5. 剧照直接上传到目标目录/extrafanart/ =====
 	if len(r.PreviewImages) > 0 {
 		_ = fs.MkdirAll(targetDir + "/extrafanart")
 		success := 0
@@ -215,16 +208,13 @@ func (s *Scanner) writeMetadataToTarget(fs FileSystem, targetDir string, r *Scra
 		helpers.AppLogger.Infof("[AV元数据] 剧照上传完成: %d/%d", success, len(r.PreviewImages))
 	}
 
-	// ===== 6. 预告片 =====
 	if r.Trailer != "" {
 		_ = fs.MkdirAll(targetDir + "/trailers")
 		_ = fs.Write(targetDir+"/trailers/trailer.strm", []byte(r.Trailer))
 	}
-
 	return nil
 }
 
-// prepareImages 下载候选图 + 打水印，返回 poster/fanart/thumb 的字节
 func (s *Scanner) prepareImages(r *ScrapeResult, cfg *Config) (posterData, fanartData, thumbData []byte) {
 	watermarks := buildWatermarks(r, cfg)
 	if len(watermarks) > 0 {
@@ -235,7 +225,6 @@ func (s *Scanner) prepareImages(r *ScrapeResult, cfg *Config) (posterData, fanar
 		helpers.AppLogger.Infof("[AV水印] %s 准备打水印: %v", r.Code, names)
 	}
 
-	// 1. 找竖版 poster
 	for _, url := range r.ImageCandidates {
 		data, w, h, err := downloadImageWithSize(url)
 		if err != nil || w == 0 || h == 0 || h <= w {
@@ -245,7 +234,6 @@ func (s *Scanner) prepareImages(r *ScrapeResult, cfg *Config) (posterData, fanar
 		r.Poster = url
 		break
 	}
-	// 2. 找横版 fanart
 	for _, url := range r.ImageCandidates {
 		data, w, h, err := downloadImageWithSize(url)
 		if err != nil || w == 0 || h == 0 || h >= w {
@@ -256,7 +244,6 @@ func (s *Scanner) prepareImages(r *ScrapeResult, cfg *Config) (posterData, fanar
 		break
 	}
 
-	// 3. poster 兜底 1：DMM 拼接
 	if posterData == nil {
 		if dmmURL := dmmPosterURL(r.Code); dmmURL != "" {
 			if data, err := downloadDMMImage(dmmURL); err == nil {
@@ -265,7 +252,6 @@ func (s *Scanner) prepareImages(r *ScrapeResult, cfg *Config) (posterData, fanar
 			}
 		}
 	}
-	// 4. poster 兜底 2：从 fanart 右侧裁剪
 	if posterData == nil && fanartData != nil {
 		if cropped, ok := cropPosterFromFanart(fanartData); ok {
 			posterData = cropped
@@ -273,14 +259,12 @@ func (s *Scanner) prepareImages(r *ScrapeResult, cfg *Config) (posterData, fanar
 		}
 	}
 
-	// 5. poster 打水印
 	if posterData != nil && len(watermarks) > 0 {
 		if wm, err := applyWatermark(posterData, watermarks); err == nil {
 			posterData = wm
 			helpers.AppLogger.Infof("[AV水印] poster 已打水印")
 		}
 	}
-	// 6. thumb = fanart 复制 + 打水印
 	if fanartData != nil {
 		thumbData = append([]byte(nil), fanartData...)
 		if len(watermarks) > 0 {
@@ -293,7 +277,6 @@ func (s *Scanner) prepareImages(r *ScrapeResult, cfg *Config) (posterData, fanar
 	return
 }
 
-// moveVideo 移动视频到目标目录
 func (s *Scanner) moveVideo(fs FileSystem, srcPath, targetDir, newName, moveMethod string) error {
 	switch moveMethod {
 	case "copy":
@@ -310,7 +293,6 @@ func (s *Scanner) moveVideo(fs FileSystem, srcPath, targetDir, newName, moveMeth
 	}
 }
 
-// renderFolderTemplate 渲染文件夹模板
 func renderFolderTemplate(tpl string, m *models.AVMedia) string {
 	if tpl == "" {
 		tpl = "{code}"
