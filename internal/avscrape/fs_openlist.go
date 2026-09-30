@@ -103,7 +103,8 @@ func (f *FSOpenList) MkdirAll(path string) error {
 	return f.client.Mkdir(path)
 }
 
-func (f *FSOpenList) Move(src, dstDir, newName string) error {
+// Move 移动文件（OpenList 忽略 srcID，用路径）
+func (f *FSOpenList) Move(src, srcID, dstDir, newName string) error {
 	slowDown()
 	if newName != "" && newName != filepath.Base(src) {
 		if err := f.client.Rename(filepath.Dir(src), filepath.Base(src), newName); err != nil {
