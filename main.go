@@ -372,6 +372,11 @@ func initOthers() {
 	models.LoadScrapeSettings()
 	models.InitDQ()
 	models.InitUQ()
+
+	// ===== 清空上次运行残留的 AV 刮削临时目录（新增） =====
+	os.RemoveAll(filepath.Join(helpers.ConfigDir, "tmp", "avscrape"))
+	// ====================================================
+
 	models.InitNotificationManager()
 	controllers.StartListenTelegramBot()
 	models.GetEmbyConfig()
@@ -394,15 +399,15 @@ func initOthers() {
 		}
 	})
 
-	// ===== 启动同步任务队列管理器 =====
+	// 启动同步任务队列管理器
 	synccron.InitNewSyncQueueManager()
 
-	// ===== 注册 AV 扫描回调（新增） =====
+	// ===== 注册 AV 扫描回调 =====
 	synccron.AVScanHandler = func(pathID uint) error {
 		scanner := avscrape.NewScanner(db.Db)
 		return scanner.Scan(pathID)
 	}
-	// ====================================
+	// ============================
 
 	wsHub := websocket.NewEventHub()
 	websocket.GlobalEventHub = wsHub
@@ -471,9 +476,11 @@ func setRouter(r *gin.Engine) {
 	r.POST("/api/update-fn-access-path", controllers.UpdateFNPath)
 	r.GET("/api/path/is-fn-os", controllers.IsFnOS)
 
+	// ===== AV 刮削模块注册 =====
 	if err := avscrape.Register(r, db.Db); err != nil {
 		log.Fatal("AV 刮削模块注册失败:", err)
 	}
+	// ==========================
 
 	api := r.Group("/api")
 	api.Use(controllers.JWTAuthMiddleware())
