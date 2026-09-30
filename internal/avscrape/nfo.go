@@ -4,10 +4,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"Q115-STRM/internal/models"
 )
 
 // GenerateNFO 生成 NFO 文本
-// poster / thumb / fanart 使用相对文件名（图片已下载到同目录）
 func GenerateNFO(r *ScrapeResult) string {
 	if r == nil {
 		return ""
@@ -52,12 +53,9 @@ func GenerateNFO(r *ScrapeResult) string {
 	sb.WriteString("  <mpaa>JP-18+</mpaa>\n")
 	sb.WriteString("  <customrating>JP-18+</customrating>\n")
 
-	// 评分：JavDB 评分（10 分制）
 	if r.Rating > 0 {
 		sb.WriteString(fmt.Sprintf("  <rating>%.1f</rating>\n", r.Rating))
-		// 百分制影评人评分
 		sb.WriteString(fmt.Sprintf("  <criticrating>%.1f</criticrating>\n", r.Rating*10))
-		// Kodi 结构化评分块（Emby 也读）
 		sb.WriteString("  <ratings>\n")
 		sb.WriteString("    <rating name=\"javdb\" max=\"10\" default=\"true\">\n")
 		sb.WriteString(fmt.Sprintf("      <value>%.1f</value>\n", r.Rating))
@@ -75,7 +73,6 @@ func GenerateNFO(r *ScrapeResult) string {
 		sb.WriteString("  <votes/>\n")
 	}
 
-	// 图片：使用相对文件名，Emby 从同目录加载
 	sb.WriteString("  <poster>poster.jpg</poster>\n")
 	sb.WriteString("  <thumb>thumb.jpg</thumb>\n")
 	sb.WriteString("  <fanart>fanart.jpg</fanart>\n")
@@ -117,7 +114,7 @@ func GenerateNFO(r *ScrapeResult) string {
 }
 
 // MediaFromResult 把 ScrapeResult 转成 AVMedia 入库
-func MediaFromResult(r *ScrapeResult) *AVMedia {
+func MediaFromResult(r *ScrapeResult) *models.AVMedia {
 	if r == nil {
 		return nil
 	}
@@ -125,7 +122,7 @@ func MediaFromResult(r *ScrapeResult) *AVMedia {
 	actors, _ := json.Marshal(r.Actors)
 	previews, _ := json.Marshal(r.PreviewImages)
 	urls, _ := json.Marshal(r.Urls)
-	return &AVMedia{
+	return &models.AVMedia{
 		Code:          r.Code,
 		Title:         r.Title,
 		OriginalTitle: r.OriginalTitle,
