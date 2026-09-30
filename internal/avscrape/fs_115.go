@@ -78,7 +78,14 @@ func (f *FS115) Read(path string) ([]byte, error) {
 	return helpers.ReadFromUrl(url, v115open.DEFAULTUA)
 }
 
+// Write 上传文件，如果目标已存在先删除再上传
 func (f *FS115) Write(path string, data []byte) error {
+	if f.Exists(path) {
+		if err := f.Delete(path); err != nil {
+			helpers.AppLogger.Warnf("[FS-115] 删除已存在文件失败: %s => %v", path, err)
+		}
+	}
+
 	tmpFile, err := os.CreateTemp("", "avscrape-*")
 	if err != nil {
 		return err
@@ -128,7 +135,6 @@ func (f *FS115) MkdirAll(path string) error {
 	return nil
 }
 
-// Move 移动文件到目标目录，可选改名
 func (f *FS115) Move(src, dstDir, newName string) error {
 	srcDetail, err := f.client.GetFsDetailByPath(f.ctx, src)
 	if err != nil || srcDetail == nil || srcDetail.FileId == "" {
@@ -214,6 +220,7 @@ func (f *FS115) Upload(localPath, remotePath string) error {
 	return err
 }
 
+// GetURL 获取直链（用于 ffprobe）
 func (f *FS115) GetURL(path string) (string, error) {
 	detail, err := f.client.GetFsDetailByPath(f.ctx, path)
 	if err != nil || detail == nil || detail.FileId == "" {
