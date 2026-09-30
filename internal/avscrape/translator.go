@@ -240,7 +240,7 @@ func (t *Translator) TranslateResult(r *ScrapeResult) {
 	}
 	// 翻译演员名（不含中文的才翻）
 	for i := range r.Actors {
-		if !containsChinese(r.Actors[i].Name) {
+		if isJapanese(r.Actors[i].Name) {
 			if s, err := t.Translate(r.Actors[i].Name); err == nil && s != "" && s != r.Actors[i].Name {
 				r.Actors[i].Name = s
 			}
