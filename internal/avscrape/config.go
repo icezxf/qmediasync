@@ -21,9 +21,20 @@ type Config struct {
 	TranslateDeepLKey   string `json:"translate_deepl_key"`
 	TranslateBingKey    string `json:"translate_bing_key"`
 	TranslateBingRegion string `json:"translate_bing_region"`
-	EnableJavDBRating   bool   `json:"enable_javdb_rating"` // 是否用 JavDB 评分
-	JavDBEndpoint       string `json:"javdb_endpoint"`      // JavDB 非官方 API 地址
+	EnableJavDBRating   bool   `json:"enable_javdb_rating"`
+	JavDBEndpoint       string `json:"javdb_endpoint"`
 	PreferChineseSource bool   `json:"prefer_chinese_source"`
+
+	Watermark4K         bool `json:"watermark_4k"`
+	Watermark8K         bool `json:"watermark_8k"`
+	WatermarkSubtitle   bool `json:"watermark_subtitle"`
+	WatermarkCrack      bool `json:"watermark_crack"`
+	WatermarkLeak       bool `json:"watermark_leak"`
+	WatermarkUncensored bool `json:"watermark_uncensored"`
+
+	ExtraTagResolution bool `json:"extra_tag_resolution"`
+	ExtraTagUncensored bool `json:"extra_tag_uncensored"`
+	ExtraTagChineseSub bool `json:"extra_tag_chinese_sub"`
 }
 
 var defaultConfig = Config{
@@ -36,6 +47,17 @@ var defaultConfig = Config{
 	TranslateTarget:     "zh",
 	EnableJavDBRating:   false,
 	PreferChineseSource: true,
+
+	Watermark4K:         true,
+	Watermark8K:         true,
+	WatermarkSubtitle:   true,
+	WatermarkCrack:      true,
+	WatermarkLeak:       true,
+	WatermarkUncensored: true,
+
+	ExtraTagResolution: true,
+	ExtraTagUncensored: true,
+	ExtraTagChineseSub: true,
 }
 
 func LoadConfig(db *gorm.DB) (*Config, error) {
