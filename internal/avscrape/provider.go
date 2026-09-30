@@ -30,16 +30,22 @@ type ScrapeResult struct {
 	Fanart        string   `json:"fanart"`
 	PreviewImages []string `json:"preview_images"`
 	Trailer       string   `json:"trailer"`
-	Rating        float64  `json:"rating"`  // JavDB 评分转 10 分制（如 8.8）
-	Votes         int      `json:"votes"`   // 评分人数
+	Rating        float64  `json:"rating"`
+	Votes         int      `json:"votes"`
 	Urls          []string `json:"urls"`
 	Source        string   `json:"source"`
 	HasChinese    bool     `json:"has_chinese"`
 
+	// 本地检测结果
+	Resolution    string   `json:"resolution"`
+	IsHDR         bool     `json:"is_hdr"`
+	IsUncensored  bool     `json:"is_uncensored"`
+	HasChineseSub bool     `json:"has_chinese_sub"`
+	ExtraTags     []string `json:"extra_tags"`
+
 	ImageCandidates []string `json:"-"`
 }
 
-// Provider 刮削源接口
 type Provider interface {
 	Name() string
 	Search(code string) ([]*ScrapeResult, error)
