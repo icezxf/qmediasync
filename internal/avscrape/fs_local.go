@@ -63,7 +63,7 @@ func (f *FSLocal) MkdirAll(path string) error {
 	return os.MkdirAll(path, 0755)
 }
 
-func (f *FSLocal) Move(src, dstDir, newName string) error {
+func (f *FSLocal) Move(src, srcID, dstDir, newName string) error {
 	dstName := filepath.Base(src)
 	if newName != "" {
 		dstName = newName
