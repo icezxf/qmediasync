@@ -10,20 +10,22 @@ import (
 )
 
 type Config struct {
-	EnableMetaTube      bool   `json:"enable_metatube"`
-	MetaTubeServer      string `json:"metatube_server"`
-	EnableJavStash      bool   `json:"enable_javstash"`
-	JavStashEndpoint    string `json:"javstash_endpoint"`
-	JavStashAPIKey      string `json:"javstash_api_key"`
-	EnableTranslate     bool   `json:"enable_translate"`
-	TranslateEngine     string `json:"translate_engine"`
-	TranslateTarget     string `json:"translate_target"`
-	TranslateDeepLKey   string `json:"translate_deepl_key"`
-	TranslateBingKey    string `json:"translate_bing_key"`
-	TranslateBingRegion string `json:"translate_bing_region"`
-	EnableJavDBRating   bool   `json:"enable_javdb_rating"`
-	JavDBEndpoint       string `json:"javdb_endpoint"`
-	PreferChineseSource bool   `json:"prefer_chinese_source"`
+	EnableMetaTube       bool   `json:"enable_metatube"`
+	MetaTubeServer       string `json:"metatube_server"`
+	EnableJavStash       bool   `json:"enable_javstash"`
+	JavStashEndpoint     string `json:"javstash_endpoint"`
+	JavStashAPIKey       string `json:"javstash_api_key"`
+	EnableTranslate      bool   `json:"enable_translate"`
+	TranslateEngine      string `json:"translate_engine"`
+	TranslateTarget      string `json:"translate_target"`
+	TranslateDeepLKey    string `json:"translate_deepl_key"`
+	TranslateBingKey     string `json:"translate_bing_key"`
+	TranslateBingRegion  string `json:"translate_bing_region"`
+	TranslateGeminiKey   string `json:"translate_gemini_key"`
+	TranslateGeminiModel string `json:"translate_gemini_model"`
+	EnableJavDBRating    bool   `json:"enable_javdb_rating"`
+	JavDBEndpoint        string `json:"javdb_endpoint"`
+	PreferChineseSource  bool   `json:"prefer_chinese_source"`
 
 	Watermark4K         bool `json:"watermark_4k"`
 	Watermark8K         bool `json:"watermark_8k"`
@@ -38,15 +40,16 @@ type Config struct {
 }
 
 var defaultConfig = Config{
-	EnableMetaTube:      true,
-	MetaTubeServer:      "https://metatube-server.hf.space",
-	EnableJavStash:      false,
-	JavStashEndpoint:    "https://javstash.org/graphql",
-	EnableTranslate:     false,
-	TranslateEngine:     "deepl",
-	TranslateTarget:     "zh",
-	EnableJavDBRating:   false,
-	PreferChineseSource: true,
+	EnableMetaTube:       true,
+	MetaTubeServer:       "https://metatube-server.hf.space",
+	EnableJavStash:       false,
+	JavStashEndpoint:     "https://javstash.org/graphql",
+	EnableTranslate:      false,
+	TranslateEngine:      "gemini",
+	TranslateTarget:      "zh",
+	TranslateGeminiModel: "gemini-3.8-flash",
+	EnableJavDBRating:    false,
+	PreferChineseSource:  true,
 
 	Watermark4K:         true,
 	Watermark8K:         true,
