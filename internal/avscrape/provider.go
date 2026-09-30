@@ -30,12 +30,12 @@ type ScrapeResult struct {
 	Fanart        string   `json:"fanart"`
 	PreviewImages []string `json:"preview_images"`
 	Trailer       string   `json:"trailer"`
-	Rating        float64  `json:"rating"`
+	Rating        float64  `json:"rating"`  // JavDB 评分转 10 分制（如 8.8）
+	Votes         int      `json:"votes"`   // 评分人数
 	Urls          []string `json:"urls"`
 	Source        string   `json:"source"`
 	HasChinese    bool     `json:"has_chinese"`
 
-	// 统一的图片候选池（按优先级排序），下载时按方向自动分派
 	ImageCandidates []string `json:"-"`
 }
 
@@ -44,4 +44,22 @@ type Provider interface {
 	Name() string
 	Search(code string) ([]*ScrapeResult, error)
 	Detail(code string, providerID string) (*ScrapeResult, error)
+}
+
+func containsChinese(s string) bool {
+	for _, r := range s {
+		if r >= 0x4E00 && r <= 0x9FFF {
+			return true
+		}
+	}
+	return false
+}
+
+func isJapanese(s string) bool {
+	for _, r := range s {
+		if (r >= 0x3040 && r <= 0x309F) || (r >= 0x30A0 && r <= 0x30FF) {
+			return true
+		}
+	}
+	return false
 }
