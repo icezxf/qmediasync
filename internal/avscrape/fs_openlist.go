@@ -69,7 +69,14 @@ func (f *FSOpenList) Read(path string) ([]byte, error) {
 	return helpers.ReadFromUrl(url, v115open.DEFAULTUA)
 }
 
+// Write 上传文件，如果目标已存在先删除再上传
 func (f *FSOpenList) Write(path string, data []byte) error {
+	if f.Exists(path) {
+		if err := f.Delete(path); err != nil {
+			helpers.AppLogger.Warnf("[FS-OpenList] 删除已存在文件失败: %s => %v", path, err)
+		}
+	}
+
 	tmpFile, err := os.CreateTemp("", "avscrape-*")
 	if err != nil {
 		return err
@@ -81,6 +88,7 @@ func (f *FSOpenList) Write(path string, data []byte) error {
 		return err
 	}
 	tmpFile.Close()
+
 	_, err = f.client.Upload(tmpPath, path)
 	return err
 }
@@ -89,7 +97,6 @@ func (f *FSOpenList) MkdirAll(path string) error {
 	return f.client.Mkdir(path)
 }
 
-// Move 移动文件到目标目录，可选改名
 func (f *FSOpenList) Move(src, dstDir, newName string) error {
 	if newName != "" && newName != filepath.Base(src) {
 		if err := f.client.Rename(filepath.Dir(src), filepath.Base(src), newName); err != nil {
@@ -134,6 +141,7 @@ func (f *FSOpenList) Upload(localPath, remotePath string) error {
 	return err
 }
 
+// GetURL 获取直链（用于 ffprobe）
 func (f *FSOpenList) GetURL(path string) (string, error) {
 	url := f.client.GetRawUrl(path)
 	if url == "" {
