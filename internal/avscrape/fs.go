@@ -7,6 +7,7 @@ import (
 	"Q115-STRM/internal/models"
 )
 
+// FileEntry 文件条目
 type FileEntry struct {
 	Name     string
 	Path     string
@@ -17,22 +18,14 @@ type FileEntry struct {
 	MTime    time.Time
 }
 
-type LocalFile struct {
-	LocalPath  string
-	RemoteName string
-}
-
+// FileSystem 文件系统抽象接口
 type FileSystem interface {
 	List(path string) ([]string, error)
 	ListDetailed(path string) ([]FileEntry, error)
 	Read(path string) ([]byte, error)
 	Write(path string, data []byte) error
 	MkdirAll(path string) error
-
-	// Move 移动文件。
-	// srcID：源文件 ID（115 用 fileId，可跳过源详情查询），其他源忽略
-	Move(src, srcID, dstDir, newName string) error
-
+	Move(src, dstDir, newName string) error
 	Copy(src, dstDir string) error
 	Rename(path, newName string) error
 	Exists(path string) bool
@@ -40,10 +33,9 @@ type FileSystem interface {
 	DeleteDir(path string) error
 	Download(remotePath, localPath string) error
 	Upload(localPath, remotePath string) error
-
-	QueueUploads(files []LocalFile, dstDir string, accountId uint, sourceType string) (int, error)
 }
 
+// NewFileSystem 根据 AVPath 的 SourceType 创建对应实现
 func NewFileSystem(p *models.AVPath) (FileSystem, error) {
 	switch p.SourceType {
 	case "115":
