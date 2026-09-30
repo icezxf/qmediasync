@@ -22,3 +22,8 @@ func GetTableName(model interface{}) string {
 
 	return stmt.Schema.Table
 }
+
+// DB 返回全局数据库实例，供其他包（如 synccron）使用
+func DB() *gorm.DB {
+	return db.Db
+}
