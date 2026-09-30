@@ -3,6 +3,7 @@ package avscrape
 import (
 	"fmt"
 	"sort"
+	"strings"
 
 	"Q115-STRM/internal/models"
 
@@ -22,10 +23,9 @@ func (s *Service) Scrape(code string) (*ScrapeResult, error) {
 	if err != nil {
 		return nil, err
 	}
-
 	var allResults []*ScrapeResult
 
-	// 1. MetaTube 拉所有启用源
+	// MetaTube
 	if cfg.EnableMetaTube && cfg.MetaTubeServer != "" {
 		mt := NewMetaTubeClient(cfg.MetaTubeServer)
 		hits, err := mt.Search(code)
@@ -45,7 +45,7 @@ func (s *Service) Scrape(code string) (*ScrapeResult, error) {
 		}
 	}
 
-	// 2. JavStash
+	// JavStash
 	if cfg.EnableJavStash {
 		js := NewJavStashClient(cfg.JavStashEndpoint, cfg.JavStashAPIKey)
 		hits, err := js.Search(code)
@@ -58,186 +58,269 @@ func (s *Service) Scrape(code string) (*ScrapeResult, error) {
 		return nil, fmt.Errorf("no result for %s", code)
 	}
 
-	// 3. 按优先级排序所有结果
-	sorted := sortByPriority(allResults)
+	best := mergeResults(allResults, cfg)
 
-	// 4. 逐字段按优先级取第一个非空值（合并成一个结果）
-	merged := mergeByPriority(sorted)
-
-	// 5. 最终结果如果是日文 → 翻译
-	if !merged.HasChinese && cfg.EnableTranslate {
+	// 翻译
+	if cfg.EnableTranslate && !best.HasChinese {
 		tr := NewTranslator(cfg.TranslateEngine, cfg.TranslateTarget)
-		tr.TranslateResult(merged)
-		merged.HasChinese = true
+		tr.TranslateResult(best)
+		best.HasChinese = true
 	}
 
-	// 6. 入库
-	media := MediaFromResult(merged)
+	media := MediaFromResult(best)
 	if err := s.DB.Create(media).Error; err != nil {
 		return nil, err
 	}
-	return merged, nil
+	return best, nil
 }
 
-// sortByPriority 按优先级排序：
-//  1. 有中文 + JavStash
-//  2. 有中文 + MetaTube（字段多的在前）
-//  3. 无中文 + JavStash
-//  4. 无中文 + MetaTube（字段多的在前）
-func sortByPriority(results []*ScrapeResult) []*ScrapeResult {
-	sorted := make([]*ScrapeResult, len(results))
-	copy(sorted, results)
+// mergeResults 合并多个源的结果
+// 图片优先级：JavStash 海报 > DMM/FANZA > JAV321 > JavBus
+func mergeResults(results []*ScrapeResult, cfg *Config) *ScrapeResult {
+	sorted := sortByChinese(results, cfg.PreferChineseSource)
 
-	sort.SliceStable(sorted, func(i, j int) bool {
-		return priorityLevel(sorted[i]) < priorityLevel(sorted[j])
+	best := *sorted[0]
+	best.PosterCandidates = []string{}
+	best.FanartCandidates = []string{}
+
+	type candidate struct {
+		url      string
+		priority int
+	}
+	var posterList []candidate
+	var fanartList []candidate
+
+	for _, r := range sorted {
+		p := sourceImagePriority(r.Source)
+		if r.Poster != "" {
+			posterList = append(posterList, candidate{r.Poster, p})
+		}
+		if r.Fanart != "" {
+			fanartList = append(fanartList, candidate{r.Fanart, p})
+		}
+	}
+
+	// 按优先级排序（数字越小越优先）
+	sort.SliceStable(posterList, func(i, j int) bool {
+		return posterList[i].priority < posterList[j].priority
 	})
-	return sorted
-}
+	sort.SliceStable(fanartList, func(i, j int) bool {
+		return fanartList[i].priority < fanartList[j].priority
+	})
 
-// priorityLevel 数字越小优先级越高
-func priorityLevel(r *ScrapeResult) int {
-	isJavStash := r.Source == "javstash"
-	switch {
-	case r.HasChinese && isJavStash:
-		return 1
-	case r.HasChinese && !isJavStash:
-		return 2
-	case !r.HasChinese && isJavStash:
-		return 3
-	default:
-		return 4
+	// 去重后填充候选列表
+	seenPoster := map[string]bool{}
+	for _, c := range posterList {
+		if !seenPoster[c.url] {
+			best.PosterCandidates = append(best.PosterCandidates, c.url)
+			seenPoster[c.url] = true
+		}
 	}
-}
-
-// mergeByPriority 按已排序的顺序，逐个字段取第一个非空值
-func mergeByPriority(sorted []*ScrapeResult) *ScrapeResult {
-	if len(sorted) == 0 {
-		return nil
-	}
-	// 以第一个为基准
-	merged := *sorted[0]
-	// 深拷贝切片字段，避免改到原对象
-	merged.Genres = append([]string{}, merged.Genres...)
-	merged.Actors = append([]Actor{}, merged.Actors...)
-	merged.PreviewImages = append([]string{}, merged.PreviewImages...)
-	merged.Urls = append([]string{}, merged.Urls...)
-
-	// 记录哪些字段已经填过
-	hasPlot := merged.Plot != ""
-	hasFanart := merged.Fanart != ""
-	hasTrailer := merged.Trailer != ""
-	hasDirector := merged.Director != ""
-	hasStudio := merged.Studio != ""
-	hasLabel := merged.Label != ""
-	hasSeries := merged.Series != ""
-	hasRating := merged.Rating > 0
-	hasChinese := merged.HasChinese
-
-	// 演员和标签用 map 去重，按优先级从高到低累加
-	actorSeen := make(map[string]int) // name -> index in merged.Actors
-	for i, a := range merged.Actors {
-		actorSeen[a.Name] = i
-	}
-	genreSeen := make(map[string]bool)
-	for _, g := range merged.Genres {
-		genreSeen[g] = true
+	seenFanart := map[string]bool{}
+	for _, c := range fanartList {
+		if !seenFanart[c.url] {
+			best.FanartCandidates = append(best.FanartCandidates, c.url)
+			seenFanart[c.url] = true
+		}
 	}
 
+	// Poster/Fanart 字段本身保留优先级最高的（用于 NFO 展示）
+	if len(best.PosterCandidates) > 0 {
+		best.Poster = best.PosterCandidates[0]
+	}
+	if len(best.FanartCandidates) > 0 {
+		best.Fanart = best.FanartCandidates[0]
+	}
+
+	// 合并其他字段（按顺序取第一个非空的）
 	for _, r := range sorted[1:] {
-		if !hasPlot && r.Plot != "" {
-			merged.Plot = r.Plot
-			hasPlot = true
+		if best.Plot == "" && r.Plot != "" {
+			best.Plot = r.Plot
 		}
-		if !hasFanart && r.Fanart != "" {
-			merged.Fanart = r.Fanart
-			hasFanart = true
+		if best.OriginalTitle == "" && r.OriginalTitle != "" {
+			best.OriginalTitle = r.OriginalTitle
 		}
-		if !hasTrailer && r.Trailer != "" {
-			merged.Trailer = r.Trailer
-			hasTrailer = true
+		if best.Director == "" && r.Director != "" {
+			best.Director = r.Director
 		}
-		if !hasDirector && r.Director != "" {
-			merged.Director = r.Director
-			hasDirector = true
+		if best.Studio == "" && r.Studio != "" {
+			best.Studio = r.Studio
 		}
-		if !hasStudio && r.Studio != "" {
-			merged.Studio = r.Studio
-			hasStudio = true
+		if best.Label == "" && r.Label != "" {
+			best.Label = r.Label
 		}
-		if !hasLabel && r.Label != "" {
-			merged.Label = r.Label
-			hasLabel = true
+		if best.Series == "" && r.Series != "" {
+			best.Series = r.Series
 		}
-		if !hasSeries && r.Series != "" {
-			merged.Series = r.Series
-			hasSeries = true
+		if best.Rating == 0 && r.Rating > 0 {
+			best.Rating = r.Rating
 		}
-		if !hasRating && r.Rating > 0 {
-			merged.Rating = r.Rating
-			hasRating = true
+		if best.Runtime == 0 && r.Runtime > 0 {
+			best.Runtime = r.Runtime
 		}
-		if !hasChinese && r.HasChinese {
-			hasChinese = true
+		if best.ReleaseDate == "" && r.ReleaseDate != "" {
+			best.ReleaseDate = r.ReleaseDate
 		}
-		if len(merged.PreviewImages) == 0 && len(r.PreviewImages) > 0 {
-			merged.PreviewImages = append([]string{}, r.PreviewImages...)
+		if best.Trailer == "" && r.Trailer != "" {
+			best.Trailer = r.Trailer
 		}
 
-		// 演员：高优先级的演员信息覆盖低优先级同名演员的空字段
+		// 剧照合并去重
+		for _, img := range r.PreviewImages {
+			exists := false
+			for _, bi := range best.PreviewImages {
+				if bi == img {
+					exists = true
+					break
+				}
+			}
+			if !exists {
+				best.PreviewImages = append(best.PreviewImages, img)
+			}
+		}
+
+		// 演员合并去重
 		for _, a := range r.Actors {
-			if idx, ok := actorSeen[a.Name]; ok {
-				// 同名演员，用已有的（高优先级）保留，只补空缺
-				existing := &merged.Actors[idx]
-				if existing.Role == "" && a.Role != "" {
-					existing.Role = a.Role
-				}
-				if existing.Thumb == "" && a.Thumb != "" {
-					existing.Thumb = a.Thumb
-				}
-				if existing.Image == "" && a.Image != "" {
-					existing.Image = a.Image
-				}
-				if existing.Birthday == "" && a.Birthday != "" {
-					existing.Birthday = a.Birthday
-				}
-				if existing.Country == "" && a.Country != "" {
-					existing.Country = a.Country
-				}
-				if existing.Height == 0 && a.Height != 0 {
-					existing.Height = a.Height
-				}
-			} else {
-				// 新演员，追加
-				actorSeen[a.Name] = len(merged.Actors)
-				merged.Actors = append(merged.Actors, a)
-			}
-		}
-
-		// 标签合并去重
-		for _, g := range r.Genres {
-			if !genreSeen[g] {
-				merged.Genres = append(merged.Genres, g)
-				genreSeen[g] = true
-			}
-		}
-
-		// URL 合并
-		for _, u := range r.Urls {
 			found := false
-			for _, mu := range merged.Urls {
-				if mu == u {
+			for i := range best.Actors {
+				if best.Actors[i].Name == a.Name {
+					if best.Actors[i].Image == "" && a.Image != "" {
+						best.Actors[i].Image = a.Image
+					}
+					if best.Actors[i].Birthday == "" && a.Birthday != "" {
+						best.Actors[i].Birthday = a.Birthday
+					}
+					if best.Actors[i].Country == "" && a.Country != "" {
+						best.Actors[i].Country = a.Country
+					}
+					if best.Actors[i].Height == 0 && a.Height > 0 {
+						best.Actors[i].Height = a.Height
+					}
 					found = true
 					break
 				}
 			}
 			if !found {
-				merged.Urls = append(merged.Urls, u)
+				best.Actors = append(best.Actors, a)
+			}
+		}
+
+		// 标签合并去重
+		for _, g := range r.Genres {
+			exists := false
+			for _, bg := range best.Genres {
+				if bg == g {
+					exists = true
+					break
+				}
+			}
+			if !exists {
+				best.Genres = append(best.Genres, g)
+			}
+		}
+
+		// URL 合并去重
+		for _, u := range r.Urls {
+			exists := false
+			for _, bu := range best.Urls {
+				if bu == u {
+					exists = true
+					break
+				}
+			}
+			if !exists {
+				best.Urls = append(best.Urls, u)
 			}
 		}
 	}
 
-	merged.HasChinese = hasChinese
-	return &merged
+	return &best
+}
+
+// sourceImagePriority 图片来源优先级，数字越小越优先
+// JavStash 的图无防盗链，最稳定，放第一位
+func sourceImagePriority(source string) int {
+	switch {
+	case strings.HasPrefix(source, "javstash"):
+		return 1 // JavStash 最优先
+	case strings.Contains(source, "DMM"):
+		return 2 // DMM 质量高，无防盗链
+	case strings.Contains(source, "FANZA"):
+		return 2
+	case strings.Contains(source, "JAV321"):
+		return 3
+	case strings.Contains(source, "JavBus"):
+		return 10 // JavBus 有防盗链，放最后
+	default:
+		return 5
+	}
+}
+
+// sortByChinese 有中文优先，其次按完整度
+func sortByChinese(results []*ScrapeResult, preferChinese bool) []*ScrapeResult {
+	sorted := make([]*ScrapeResult, len(results))
+	copy(sorted, results)
+
+	for i := 0; i < len(sorted); i++ {
+		for j := i + 1; j < len(sorted); j++ {
+			si := completeness(sorted[i])
+			sj := completeness(sorted[j])
+			if preferChinese {
+				ci := boolToInt(sorted[i].HasChinese)
+				cj := boolToInt(sorted[j].HasChinese)
+				if cj > ci || (cj == ci && sj > si) {
+					sorted[i], sorted[j] = sorted[j], sorted[i]
+				}
+			} else {
+				if sj > si {
+					sorted[i], sorted[j] = sorted[j], sorted[i]
+				}
+			}
+		}
+	}
+	return sorted
+}
+
+func completeness(r *ScrapeResult) int {
+	s := 0
+	if r.Plot != "" {
+		s += 10
+	}
+	if r.Poster != "" {
+		s += 3
+	}
+	if r.Fanart != "" {
+		s += 3
+	}
+	if len(r.PreviewImages) > 0 {
+		s += 5
+	}
+	if r.Director != "" {
+		s += 2
+	}
+	if r.Studio != "" {
+		s += 2
+	}
+	if r.Label != "" {
+		s += 1
+	}
+	if r.Series != "" {
+		s += 1
+	}
+	if r.Rating > 0 {
+		s += 2
+	}
+	if r.Trailer != "" {
+		s += 2
+	}
+	return s
+}
+
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 func extractProviderID(source, code string) string {
