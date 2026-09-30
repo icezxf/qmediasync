@@ -102,11 +102,3 @@ r.Actors = append(r.Actors, Actor{Name: name})
 r.HasChinese = containsChinese(r.Title) || containsChinese(r.Plot)
 return r, nil
 }
-func containsChinese(s string) bool {
-for _, r := range s {
-if r >= 0x4E00 && r <= 0x9FFF {
-return true
-}
-}
-return false
-}
