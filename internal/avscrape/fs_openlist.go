@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"Q115-STRM/internal/helpers"
@@ -13,7 +14,6 @@ import (
 	"Q115-STRM/internal/v115open"
 )
 
-// slowDown OpenList 也加节流
 func slowDown() {
 	time.Sleep(500 * time.Millisecond)
 }
@@ -160,3 +160,52 @@ func (f *FSOpenList) Upload(localPath, remotePath string) error {
 	_, err := f.client.Upload(localPath, remotePath)
 	return err
 }
+
+// QueueUploads 把本地文件加入上传队列（异步走 GlobalUploadQueue）
+func (f *FSOpenList) QueueUploads(files []LocalFile, dstDir string, accountId uint, sourceType string) (int, error) {
+	if len(files) == 0 {
+		return 0, nil
+	}
+
+	// 确保目标目录存在
+	slowDown()
+	_ = f.client.Mkdir(dstDir)
+
+	createdSubDirs := map[string]bool{}
+
+	count := 0
+	for _, file := range files {
+		remotePath := dstDir + "/" + file.RemoteName
+
+		// 处理子目录
+		parentPath := dstDir
+		if idx := lastIndexByte(file.RemoteName, '/'); idx > 0 {
+			parentPath = dstDir + "/" + file.RemoteName[:idx]
+			if !createdSubDirs[parentPath] {
+				slowDown()
+				_ = f.client.Mkdir(parentPath)
+				createdSubDirs[parentPath] = true
+			}
+		}
+
+		fileName := filepath.Base(file.RemoteName)
+		if err := models.AddUploadTaskFromAV(accountId, models.SourceType(sourceType), fileName, file.LocalPath, remotePath, parentPath); err != nil {
+			helpers.AppLogger.Warnf("[AV上传队列] %s 加入队列失败: %v", file.RemoteName, err)
+			continue
+		}
+		helpers.AppLogger.Infof("[AV上传队列] %s 已加入队列 (remote=%s, parentPath=%s)", file.RemoteName, remotePath, parentPath)
+		count++
+	}
+	return count, nil
+}
+
+func lastIndexByte(s string, b byte) int {
+	for i := len(s) - 1; i >= 0; i-- {
+		if s[i] == b {
+			return i
+		}
+	}
+	return -1
+}
+
+var _ = strings.TrimSpace
