@@ -3,12 +3,8 @@ package avscrape
 import (
 	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
 	"sort"
 	"strings"
-	"sync"
-	"time"
 
 	"Q115-STRM/internal/helpers"
 	"Q115-STRM/internal/models"
@@ -64,9 +60,10 @@ func (s *Service) Scrape(code string) (*ScrapeResult, error) {
 
 	best := mergeResults(allResults, cfg)
 
-	// JavDB 评分
-	if cfg.EnableJavDBRating {
-		if rating, votes, err := GetJavDBRating(cfg.JavDBEndpoint, code); err == nil && rating > 0 {
+	// ===== JavDB 评分（搜索页解析）=====
+	if cfg.EnableJavDBRating && cfg.JavDBCookie != "" {
+		client := NewJavDBClient(cfg.JavDBCookie)
+		if rating, votes, err := client.GetRating(code); err == nil && rating > 0 {
 			best.Rating = rating
 			best.Votes = votes
 			helpers.AppLogger.Infof("[AV刮削] JavDB 评分: %.2f (%d人)", rating, votes)
@@ -75,7 +72,7 @@ func (s *Service) Scrape(code string) (*ScrapeResult, error) {
 		}
 	}
 
-	// 翻译：只翻标题、简介、标签，不翻演员名
+	// ===== 翻译 =====
 	if cfg.EnableTranslate {
 		tr := NewTranslator(cfg.TranslateEngine, cfg.TranslateTarget)
 		tr.DeepLKey = cfg.TranslateDeepLKey
@@ -103,84 +100,6 @@ func (s *Service) Scrape(code string) (*ScrapeResult, error) {
 		}
 	}
 	return best, nil
-}
-
-// ============================================================
-// JavDB 评分
-// ============================================================
-
-var javdbHTTPClient = &http.Client{Timeout: 20 * time.Second}
-var javdbLastReq time.Time
-var javdbMu sync.Mutex
-
-func GetJavDBRating(endpoint, code string) (float64, int, error) {
-	if endpoint == "" {
-		return 0, 0, fmt.Errorf("JavDB endpoint 未配置")
-	}
-
-	javdbMu.Lock()
-	elapsed := time.Since(javdbLastReq)
-	if elapsed < 15*time.Second {
-		wait := 15*time.Second - elapsed
-		helpers.AppLogger.Infof("[JavDB] 限速等待 %.1f 秒", wait.Seconds())
-		time.Sleep(wait)
-	}
-	javdbLastReq = time.Now()
-	javdbMu.Unlock()
-
-	u := strings.TrimRight(endpoint, "/") + "/api/v1/movies/search?q=" + code
-	req, _ := http.NewRequest("GET", u, nil)
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36")
-
-	resp, err := javdbHTTPClient.Do(req)
-	if err != nil {
-		return 0, 0, err
-	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
-
-	if resp.StatusCode != http.StatusOK {
-		return 0, 0, fmt.Errorf("JavDB HTTP %d", resp.StatusCode)
-	}
-
-	var result struct {
-		Data []struct {
-			Number       string `json:"number"`
-			Rate         string `json:"rate"`
-			CommentCount string `json:"comment_count"`
-			Score        string `json:"score"`
-			Votes        int    `json:"votes"`
-		} `json:"data"`
-	}
-	if err := json.Unmarshal(body, &result); err != nil {
-		return 0, 0, fmt.Errorf("JavDB 解析失败: %w", err)
-	}
-	if len(result.Data) == 0 {
-		return 0, 0, fmt.Errorf("JavDB 无结果")
-	}
-
-	d := result.Data[0]
-	var raw float64
-	if d.Rate != "" {
-		fmt.Sscanf(d.Rate, "%f", &raw)
-	} else if d.Score != "" {
-		fmt.Sscanf(d.Score, "%f", &raw)
-	}
-	var votes int
-	if d.CommentCount != "" {
-		fmt.Sscanf(d.CommentCount, "%d", &votes)
-	} else {
-		votes = d.Votes
-	}
-
-	if raw <= 0 {
-		return 0, 0, fmt.Errorf("JavDB 无评分")
-	}
-	rating := raw
-	if raw <= 5.0 {
-		rating = raw * 2
-	}
-	return rating, votes, nil
 }
 
 // ============================================================
@@ -267,7 +186,6 @@ func mergeResults(results []*ScrapeResult, cfg *Config) *ScrapeResult {
 			}
 		}
 
-		// 演员合并：按名字 + aliases 交叉匹配去重
 		for _, a := range r.Actors {
 			found := false
 			for i := range best.Actors {
@@ -305,7 +223,6 @@ func mergeResults(results []*ScrapeResult, cfg *Config) *ScrapeResult {
 			}
 		}
 
-		// 标签合并去重（归一化后比较）
 		for _, g := range r.Genres {
 			exists := false
 			for _, bg := range best.Genres {
@@ -366,7 +283,6 @@ func aliasMatch(a, b Actor) bool {
 	return false
 }
 
-// normalizeName 归一化人名：去空格、全角转半角、小写
 func normalizeName(s string) string {
 	s = strings.TrimSpace(s)
 	s = strings.ReplaceAll(s, "　", "")
@@ -374,7 +290,6 @@ func normalizeName(s string) string {
 	return strings.ToLower(s)
 }
 
-// normalizeTag 归一化标签：统一分隔符、去空格、小写、特殊映射
 func normalizeTag(s string) string {
 	s = strings.TrimSpace(s)
 	s = strings.ReplaceAll(s, "・", "、")
@@ -382,7 +297,6 @@ func normalizeTag(s string) string {
 	s = strings.ReplaceAll(s, "　", "")
 	s = strings.ReplaceAll(s, " ", "")
 	s = strings.ToLower(s)
-	// "four k" → "4k"
 	s = strings.ReplaceAll(s, "fourk", "4k")
 	return s
 }
