@@ -78,10 +78,8 @@ func (s *Scanner) Scan(pathID uint) error {
 			continue
 		}
 
-		// 本地检测
 		s.detectLocalMeta(fs, &path, result, fullPath)
 
-		// 计算目标目录
 		media := MediaFromResult(result)
 		subPath := renderFolderTemplate(path.NameTemplate, media)
 		subPath = strings.Trim(subPath, "/")
@@ -105,13 +103,11 @@ func (s *Scanner) Scan(pathID uint) error {
 			cfg = &def
 		}
 
-		// 直接把所有元数据写到目标目录
 		if err := s.writeMetadataToTarget(fs, targetDir, result, cfg); err != nil {
 			s.recordTask(code, fullPath, "failed", err.Error(), result.Source)
 			continue
 		}
 
-		// 移动视频
 		if path.Mode == "scrape_and_rename" || path.Mode == "rename_only" {
 			suffix := ""
 			switch result.Resolution {
@@ -161,7 +157,6 @@ func (s *Scanner) detectLocalMeta(fs FileSystem, path *models.AVPath, r *ScrapeR
 	}
 }
 
-// writeMetadataToTarget 直接把所有元数据写到目标目录（不经过源目录）
 func (s *Scanner) writeMetadataToTarget(fs FileSystem, targetDir string, r *ScrapeResult, cfg *Config) error {
 	posterData, fanartData, thumbData := s.prepareImages(r, cfg)
 
@@ -293,21 +288,42 @@ func (s *Scanner) moveVideo(fs FileSystem, srcPath, targetDir, newName, moveMeth
 	}
 }
 
+// renderFolderTemplate 渲染文件夹模板
+// 多演员规则：
+//   1 位   → 用演员名
+//   2-3 位 → 用逗号拼接
+//   > 3 位 → 用"多人作品"
 func renderFolderTemplate(tpl string, m *models.AVMedia) string {
 	if tpl == "" {
 		tpl = "{code}"
 	}
+
 	actorName := ""
 	if m.Actors != "" {
 		var list []Actor
 		if err := json.Unmarshal([]byte(m.Actors), &list); err == nil && len(list) > 0 {
-			actorName = list[0].Name
+			names := make([]string, 0, len(list))
+			for _, a := range list {
+				if a.Name != "" {
+					names = append(names, a.Name)
+				}
+			}
+			switch {
+			case len(names) == 1:
+				actorName = names[0]
+			case len(names) >= 2 && len(names) <= 3:
+				actorName = strings.Join(names, ",")
+			case len(names) > 3:
+				actorName = "多人作品"
+			}
 		}
 	}
+
 	year := ""
 	if len(m.ReleaseDate) >= 4 {
 		year = m.ReleaseDate[:4]
 	}
+
 	r := tpl
 	r = strings.ReplaceAll(r, "{actors}", sanitizePathSegment(actorName))
 	r = strings.ReplaceAll(r, "{actor}", sanitizePathSegment(actorName))
