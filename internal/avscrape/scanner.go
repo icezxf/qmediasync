@@ -66,7 +66,8 @@ type groupItem struct {
 // Scan 主流程
 // 1. 遍历目录找所有视频
 // 2. 按番号分组（cd1/cd2 归为一组）
-// 3. 每组刮削一次、探测一次、一份 NFO、所有文件都移动
+// 3. 每组：每次重新刮削 + 探测 + 移动 + 元数据 + 清理
+// 注意：不做 DB 复用，每次扫描都重新调 JavStash/MetaTube 拿最新数据
 // ============================================================
 func (s *Scanner) Scan(pathID uint) error {
 	var path models.AVPath
@@ -94,7 +95,7 @@ func (s *Scanner) Scan(pathID uint) error {
 	}
 	helpers.AppLogger.Infof("[AV扫描] 目录 %s 共找到 %d 个视频文件", path.SourcePath, len(videoFiles))
 
-	// 按番号分组
+	// 按番号分组（多碟）
 	groups := make(map[string]*groupItem)
 	var order []string
 	for _, fullPath := range videoFiles {
@@ -112,26 +113,20 @@ func (s *Scanner) Scan(pathID uint) error {
 		groups[code].Files = append(groups[code].Files, fullPath)
 	}
 
+	// 逐组处理
 	for _, code := range order {
 		g := groups[code]
 		primaryFile := g.Files[0]
 		helpers.AppLogger.Infof("[AV扫描] 番号 %s 共 %d 个文件，主文件: %s",
 			code, len(g.Files), filepath.Base(primaryFile))
 
-		var existing models.AVMedia
-		hasExisting := s.DB.Where("code = ?", code).First(&existing).Error == nil
-
-		var result *ScrapeResult
-		if hasExisting {
-			result = mediaToScrapeResult(&existing)
-		} else {
-			r, err := s.Svc.Scrape(code, "")
-			if err != nil {
-				s.recordTask(code, primaryFile, "failed", err.Error(), "")
-				continue
-			}
-			result = r
+		// ===== 每次都重新刮削，拿最新数据 =====
+		r, err := s.Svc.Scrape(code, "")
+		if err != nil {
+			s.recordTask(code, primaryFile, "failed", err.Error(), "")
+			continue
 		}
+		result := r
 
 		// 过滤男优
 		result.Actors = filterFemaleActors(result.Actors)
@@ -163,11 +158,7 @@ func (s *Scanner) Scan(pathID uint) error {
 			}
 		}
 
-		msg := fmt.Sprintf("共 %d 个文件", len(g.Files))
-		if hasExisting {
-			msg = "已存在，重新整理完成"
-		}
-		s.recordTask(code, primaryFile, "done", msg, result.Source)
+		s.recordTask(code, primaryFile, "done", fmt.Sprintf("共 %d 个文件", len(g.Files)), result.Source)
 	}
 
 	if path.Mode != "scrape_only" {
@@ -212,7 +203,6 @@ func applyEnsembleTag(r *ScrapeResult) {
 	if r == nil || len(r.Actors) < 2 {
 		return
 	}
-	// 1. Genres 加共演
 	has := false
 	for _, g := range r.Genres {
 		if g == "共演" {
@@ -223,7 +213,6 @@ func applyEnsembleTag(r *ScrapeResult) {
 	if !has {
 		r.Genres = append(r.Genres, "共演")
 	}
-	// 2. Series 加共演
 	if r.Series == "" {
 		r.Series = "共演"
 	} else if !strings.Contains(r.Series, "共演") {
@@ -351,7 +340,7 @@ func (s *Scanner) organize(fs FileSystem, path *models.AVPath, media *models.AVM
 // ============================================================
 // prepareMetaFiles 生成元数据
 // 图片策略：
-//   - poster（竖版）：ImageCandidates 竖图 > DMM（仅竖版）> fanart 裁剪
+//   - poster（竖版）：ImageCandidates 竖图 > DMM（仅竖版 ps.jpg）> fanart 裁剪
 //   - fanart（横版）：ImageCandidates 横图
 //   - thumb = fanart 副本
 // ============================================================
@@ -387,8 +376,21 @@ func (s *Scanner) prepareMetaFiles(baseName string, r *ScrapeResult, cfg *Config
 
 	// 3. 从 ImageCandidates 挑竖版 poster 和横版 fanart
 	var posterData, fanartData []byte
-	helpers.AppLogger.Infof("[AV元数据] ImageCandidates 共 %d 张:", len(r.ImageCandidates))
-	for i, url := range r.ImageCandidates {
+
+	// 3.1 保险：ImageCandidates 为空时用 r.Poster/r.Fanart 兜底
+	candidates := r.ImageCandidates
+	if len(candidates) == 0 {
+		if r.Poster != "" {
+			candidates = append(candidates, r.Poster)
+		}
+		if r.Fanart != "" && r.Fanart != r.Poster {
+			candidates = append(candidates, r.Fanart)
+		}
+		helpers.AppLogger.Infof("[AV元数据] ImageCandidates 为空，用 r.Poster/r.Fanart 兜底，共 %d 张", len(candidates))
+	}
+
+	helpers.AppLogger.Infof("[AV元数据] 待筛选图片共 %d 张:", len(candidates))
+	for i, url := range candidates {
 		data, err := downloadImage(url)
 		if err != nil {
 			helpers.AppLogger.Warnf("[AV元数据]   [%d] 下载失败: %s => %v", i, redactURL(url), err)
@@ -415,6 +417,7 @@ func (s *Scanner) prepareMetaFiles(baseName string, r *ScrapeResult, cfg *Config
 			break
 		}
 	}
+
 	if posterData == nil {
 		helpers.AppLogger.Warnf("[AV元数据] ImageCandidates 里没有竖版图，将走 DMM 兜底")
 	}
@@ -422,7 +425,7 @@ func (s *Scanner) prepareMetaFiles(baseName string, r *ScrapeResult, cfg *Config
 		helpers.AppLogger.Warnf("[AV元数据] ImageCandidates 里没有横版图，fanart 将缺失")
 	}
 
-	// 4. poster 兜底 1：DMM（仅接受竖版，横版直接跳过，留给 fanart 裁剪兜底）
+	// 4. poster 兜底 1：DMM（仅接受竖版 ps.jpg，横版直接跳过留给 fanart 裁剪兜底）
 	if posterData == nil {
 		if dmmURL := dmmPosterURL(r.Code); dmmURL != "" {
 			if data, err := downloadDMMImage(dmmURL); err == nil {
@@ -475,6 +478,7 @@ func (s *Scanner) prepareMetaFiles(baseName string, r *ScrapeResult, cfg *Config
 	} else {
 		helpers.AppLogger.Warnf("[AV元数据] poster 最终为 nil，未生成")
 	}
+
 	// 8. 写 fanart + thumb
 	if fanartData != nil {
 		p := filepath.Join(tmpDir, "fanart.jpg")
@@ -519,47 +523,6 @@ func (s *Scanner) recordTask(code, filePath, status, msg, provider string) {
 		Message:  msg,
 		Provider: provider,
 	})
-}
-
-func mediaToScrapeResult(m *models.AVMedia) *ScrapeResult {
-	var genres []string
-	var actors []Actor
-	var previews []string
-	var urls []string
-	if m.Genres != "" {
-		_ = json.Unmarshal([]byte(m.Genres), &genres)
-	}
-	if m.Actors != "" {
-		_ = json.Unmarshal([]byte(m.Actors), &actors)
-	}
-	if m.PreviewImages != "" {
-		_ = json.Unmarshal([]byte(m.PreviewImages), &previews)
-	}
-	if m.Urls != "" {
-		_ = json.Unmarshal([]byte(m.Urls), &urls)
-	}
-	return &ScrapeResult{
-		Code:          m.Code,
-		Title:         m.Title,
-		OriginalTitle: m.OriginalTitle,
-		Plot:          m.Plot,
-		Runtime:       m.Runtime,
-		ReleaseDate:   m.ReleaseDate,
-		Director:      m.Director,
-		Studio:        m.Studio,
-		Label:         m.Label,
-		Series:        m.Series,
-		Genres:        genres,
-		Actors:        actors,
-		Poster:        m.Poster,
-		Fanart:        m.Fanart,
-		PreviewImages: previews,
-		Trailer:       m.Trailer,
-		Rating:        m.Rating,
-		Urls:          urls,
-		Source:        m.Source,
-		Oshash:        m.Oshash,
-	}
 }
 
 func walkVideos(fs FileSystem, root string, depth int) ([]string, error) {
