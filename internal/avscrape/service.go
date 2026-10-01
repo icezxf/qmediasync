@@ -19,12 +19,23 @@ func NewService(db *gorm.DB) *Service {
 	return &Service{DB: db}
 }
 
-func (s *Service) Scrape(code string) (*ScrapeResult, error) {
+func (s *Service) Scrape(code string, oshash string) (*ScrapeResult, error) {
 	cfg, err := LoadConfig(s.DB)
 	if err != nil {
 		return nil, err
 	}
 	var allResults []*ScrapeResult
+
+	// ===== oshash 优先匹配 =====
+	if oshash != "" && cfg.EnableOshashMatch && cfg.EnableJavStash {
+		js := NewJavStashClient(cfg.JavStashEndpoint, cfg.JavStashAPIKey)
+		if r, err := js.SearchByOshash(oshash); err == nil {
+			helpers.AppLogger.Infof("[AV刮削] oshash 优先命中: %s => %s", oshash, r.Code)
+			allResults = append(allResults, r)
+		} else {
+			helpers.AppLogger.Infof("[AV刮削] oshash 未命中，回退到番号搜索: %v", err)
+		}
+	}
 
 	// MetaTube
 	if cfg.EnableMetaTube && cfg.MetaTubeServer != "" {
@@ -46,7 +57,7 @@ func (s *Service) Scrape(code string) (*ScrapeResult, error) {
 		}
 	}
 
-	// JavStash
+	// JavStash 番号搜索
 	if cfg.EnableJavStash {
 		js := NewJavStashClient(cfg.JavStashEndpoint, cfg.JavStashAPIKey)
 		hits, err := js.Search(code)
@@ -59,7 +70,7 @@ func (s *Service) Scrape(code string) (*ScrapeResult, error) {
 		return nil, fmt.Errorf("no result for %s", code)
 	}
 
-	// ===== 第 1 步：用 JavStash 的 aliases 归一化所有源的演员名 =====
+	// ===== 用 JavStash 的 aliases 归一化演员名 =====
 	aliasMap := buildJavStashAliasMap(allResults)
 	if len(aliasMap) > 0 {
 		helpers.AppLogger.Infof("[演员归一化] JavStash 提供了 %d 条别名映射", len(aliasMap))
@@ -73,14 +84,14 @@ func (s *Service) Scrape(code string) (*ScrapeResult, error) {
 		}
 	}
 
-	// ===== 第 2 步：合并多源 =====
+	// ===== 合并多源 =====
 	best := mergeResults(allResults, cfg)
 
-	// ===== 第 3 步：维基百科补全演员中文名 =====
+	// ===== 维基百科补全演员中文名 =====
 	wikiClient := NewWikiClient()
 	best.Actors = wikiClient.TranslateActorNames(best.Actors)
 
-	// ===== 第 4 步：JavDB 评分 =====
+	// ===== JavDB 评分 =====
 	if cfg.EnableJavDBRating && cfg.JavDBCookie != "" {
 		client := NewJavDBClient(cfg.JavDBCookie)
 		if rating, votes, err := client.GetRating(code); err == nil && rating > 0 {
@@ -92,7 +103,7 @@ func (s *Service) Scrape(code string) (*ScrapeResult, error) {
 		}
 	}
 
-	// ===== 第 5 步：翻译 =====
+	// ===== 翻译 =====
 	if cfg.EnableTranslate {
 		tr := NewTranslator(cfg.TranslateEngine, cfg.TranslateTarget)
 		tr.DeepLKey = cfg.TranslateDeepLKey
@@ -103,6 +114,8 @@ func (s *Service) Scrape(code string) (*ScrapeResult, error) {
 		helpers.AppLogger.Infof("[AV刮削] 开始翻译 %s (engine=%s)", code, cfg.TranslateEngine)
 		tr.TranslateResult(best)
 	}
+
+	best.Oshash = oshash
 
 	media := MediaFromResult(best)
 
@@ -123,7 +136,6 @@ func (s *Service) Scrape(code string) (*ScrapeResult, error) {
 }
 
 // buildJavStashAliasMap 从 JavStash 的结果里构建"别名 → 主名"映射
-// 只处理 source 以 "javstash" 开头的 ScrapeResult
 func buildJavStashAliasMap(results []*ScrapeResult) map[string]string {
 	m := make(map[string]string)
 	for _, r := range results {
@@ -312,7 +324,6 @@ func mergeResults(results []*ScrapeResult, cfg *Config) *ScrapeResult {
 	return &best
 }
 
-// aliasMatch 演员去重：名字 + aliases 交叉匹配 + 归一化
 func aliasMatch(a, b Actor) bool {
 	an := normalizeName(a.Name)
 	bn := normalizeName(b.Name)
