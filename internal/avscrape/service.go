@@ -59,6 +59,10 @@ func (s *Service) Scrape(code string) (*ScrapeResult, error) {
 
 	best := mergeResults(allResults, cfg)
 
+	// ===== 维基百科补全演员中文名 =====
+	wikiClient := NewWikiClient()
+	best.Actors = wikiClient.TranslateActorNames(best.Actors)
+
 	// JavDB 评分（搜索页解析）
 	if cfg.EnableJavDBRating && cfg.JavDBCookie != "" {
 		client := NewJavDBClient(cfg.JavDBCookie)
