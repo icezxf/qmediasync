@@ -43,15 +43,18 @@ func (c *Controller) SaveConfig(ctx *gin.Context) {
 	ctx.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
+// Scrape 手动刮削单个番号，可选带 oshash
+// POST /api/avscrape/scrape  { "code": "SNOS-377", "oshash": "可选" }
 func (c *Controller) Scrape(ctx *gin.Context) {
 	var req struct {
-		Code string `json:"code"`
+		Code   string `json:"code"`
+		Oshash string `json:"oshash"`
 	}
 	if err := ctx.ShouldBindJSON(&req); err != nil || req.Code == "" {
 		ctx.JSON(http.StatusBadRequest, gin.H{"error": "code required"})
 		return
 	}
-	result, err := c.Svc.Scrape(req.Code)
+	result, err := c.Svc.Scrape(req.Code, req.Oshash)
 	if err != nil {
 		ctx.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
