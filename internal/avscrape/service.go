@@ -81,6 +81,8 @@ func (s *Service) Scrape(code string) (*ScrapeResult, error) {
 		tr.DeepLKey = cfg.TranslateDeepLKey
 		tr.BingKey = cfg.TranslateBingKey
 		tr.BingRegion = cfg.TranslateBingRegion
+		tr.GeminiKey = cfg.TranslateGeminiKey
+		tr.GeminiModel = cfg.TranslateGeminiModel
 		helpers.AppLogger.Infof("[AV刮削] 开始翻译 %s (engine=%s)", code, cfg.TranslateEngine)
 		tr.TranslateResult(best)
 	}
