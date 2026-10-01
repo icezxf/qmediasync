@@ -127,9 +127,9 @@ func (j *JavStashClient) Search(code string) ([]*ScrapeResult, error) {
 				Country: p.Performer.Country,
 				Height:  p.Performer.Height,
 			}
-			// 从 aliases 里找中文名
+    // 从 aliases 里找中文名（严格判断：纯汉字，不含假名/罗马字母）
 			for _, alias := range p.Performer.Aliases {
-				if containsChinese(alias) {
+				if isChineseName(alias) {
 					a.Name = alias
 					break
 				}
