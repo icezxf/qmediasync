@@ -48,6 +48,12 @@ func (s *Scanner) Scan(pathID uint) error {
 	}
 	helpers.AppLogger.Infof("[AV扫描] 目录 %s 共找到 %d 个视频文件", path.SourcePath, len(videoFiles))
 
+	cfg, cfgErr := LoadConfig(s.DB)
+	if cfgErr != nil || cfg == nil {
+		def := defaultConfig
+		cfg = &def
+	}
+
 	for _, fullPath := range videoFiles {
 		name := filepath.Base(fullPath)
 		code := ExtractCode(name)
@@ -72,6 +78,10 @@ func (s *Scanner) Scan(pathID uint) error {
 			}
 			result = r
 		}
+
+		// ===== 探测视频信息（ffprobe）+ 附加标签 =====
+		s.detectVideoMeta(fs, fullPath, result, cfg)
+		// ============================================
 
 		if path.Mode == "scrape_only" {
 			tmpDir := filepath.Dir(fullPath)
@@ -105,6 +115,37 @@ func (s *Scanner) Scan(pathID uint) error {
 
 	s.DB.Model(&path).Update("last_scan_at", now())
 	return nil
+}
+
+// detectVideoMeta 探测视频分辨率/HDR/oshash + 检测有码/中文字幕 + 生成附加标签
+func (s *Scanner) detectVideoMeta(fs FileSystem, fullPath string, r *ScrapeResult, cfg *Config) {
+	// 1. ffprobe 探测
+	if url, err := fs.GetURL(fullPath); err == nil && url != "" {
+		helpers.AppLogger.Infof("[AV探测] %s 开始 ffprobe, URL=%s", r.Code, redactURL(url))
+		if pr, err := probeVideo(url); err == nil {
+			r.Resolution = pr.Resolution
+			r.IsHDR = pr.IsHDR
+			r.Oshash = pr.Oshash
+			helpers.AppLogger.Infof("[AV探测] %s 分辨率=%s HDR=%v oshash=%s",
+				r.Code, pr.Resolution, pr.IsHDR, pr.Oshash)
+		} else {
+			helpers.AppLogger.Warnf("[AV探测] %s ffprobe 失败: %v", r.Code, err)
+		}
+	} else {
+		helpers.AppLogger.Warnf("[AV探测] %s 获取直链失败: %v", r.Code, err)
+	}
+
+	// 2. 检测有码/无码
+	r.IsUncensored = detectUncensored(r.Code)
+
+	// 3. 检测中文字幕
+	r.HasChineseSub = detectChineseSub(fs, fullPath)
+
+	// 4. 生成附加标签
+	r.ExtraTags = buildExtraTags(r, cfg)
+	if len(r.ExtraTags) > 0 {
+		helpers.AppLogger.Infof("[AV探测] %s 附加标签: %v", r.Code, r.ExtraTags)
+	}
 }
 
 func (s *Scanner) organize(fs FileSystem, path *models.AVPath, media *models.AVMedia, videoPath, videoName string, r *ScrapeResult) error {
