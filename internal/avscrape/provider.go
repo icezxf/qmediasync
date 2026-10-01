@@ -40,6 +40,9 @@ type ScrapeResult struct {
 	HasChineseSub bool     `json:"has_chinese_sub"`
 	ExtraTags     []string `json:"extra_tags"`
 
+	Oshash   string `json:"oshash"`
+	FileSize int64  `json:"file_size"`
+
 	ImageCandidates []string `json:"-"`
 }
 
@@ -67,8 +70,6 @@ func isJapanese(s string) bool {
 	return false
 }
 
-// isChineseName 严格判断是否为中文名
-// 至少含汉字，且不含假名、不含罗马字母
 func isChineseName(s string) bool {
 	if s == "" {
 		return false
