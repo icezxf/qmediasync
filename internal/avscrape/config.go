@@ -24,7 +24,7 @@ type Config struct {
 	TranslateGeminiKey   string `json:"translate_gemini_key"`
 	TranslateGeminiModel string `json:"translate_gemini_model"`
 	EnableJavDBRating    bool   `json:"enable_javdb_rating"`
-	JavDBEndpoint        string `json:"javdb_endpoint"`
+	JavDBCookie          string `json:"javdb_cookie"
 	PreferChineseSource  bool   `json:"prefer_chinese_source"`
 
 	Watermark4K         bool `json:"watermark_4k"`
