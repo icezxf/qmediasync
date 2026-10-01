@@ -18,6 +18,13 @@ type FileEntry struct {
 	MTime    time.Time
 }
 
+// LocalFile 待上传的本地文件
+// RemoteName 可以是 "poster.jpg" 或 "extrafanart/scene-01.jpg"（含子目录）
+type LocalFile struct {
+	LocalPath  string
+	RemoteName string
+}
+
 // FileSystem 文件系统抽象接口
 type FileSystem interface {
 	List(path string) ([]string, error)
@@ -33,7 +40,11 @@ type FileSystem interface {
 	DeleteDir(path string) error
 	Download(remotePath, localPath string) error
 	Upload(localPath, remotePath string) error
-	GetURL(path string) (string, error) // 获取直链（用于 ffprobe）
+	GetURL(path string) (string, error)
+
+	// QueueUploads 把本地文件加入上传队列（异步走 GlobalUploadQueue）
+	// 返回加入的任务数量
+	QueueUploads(files []LocalFile, dstDir string, accountId uint, sourceType string) (int, error)
 }
 
 // NewFileSystem 根据 AVPath 的 SourceType 创建对应实现
