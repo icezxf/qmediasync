@@ -1,64 +1,135 @@
 package avscrape
 
 import (
-    "encoding/json"
-    "fmt"
-    "io"
-    "net/http"
-    "sync"
-    "time"
+	"fmt"
+	"net/http"
+	"regexp"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/PuerkitoBio/goquery"
+
+	"Q115-STRM/internal/helpers"
 )
 
 type JavDBClient struct {
-    Endpoint string
-    HTTP     *http.Client
-    lastReq  time.Time
-    mu       sync.Mutex
+	Cookie  string
+	HTTP    *http.Client
+	lastReq time.Time
+	mu      sync.Mutex
+	cache   map[string]*javdbRatingCache
 }
 
-func NewJavDBClient() *JavDBClient {
-    return &JavDBClient{
-        Endpoint: "https://jdforrepam.com",
-        HTTP:     &http.Client{Timeout: 20 * time.Second},
-    }
+type javdbRatingCache struct {
+	rating float64
+	votes  int
+	at     time.Time
 }
 
-// GetRating 获取番号的 JavDB 评分（5分制）
+func NewJavDBClient(cookie string) *JavDBClient {
+	return &JavDBClient{
+		Cookie: cookie,
+		HTTP:   &http.Client{Timeout: 30 * time.Second},
+		cache:  make(map[string]*javdbRatingCache),
+	}
+}
+
+var javdbScoreRe = regexp.MustCompile(`([\d.]+)分,\s*由(\d+)人評價`)
+
+// GetRating 从 JavDB 搜索页解析评分
+// 内置：15 秒串行限速、24 小时内存缓存、Cloudflare 挑战识别
 func (c *JavDBClient) GetRating(code string) (float64, int, error) {
-    // 限速：确保两次请求间隔至少 15 秒
-    c.mu.Lock()
-    elapsed := time.Since(c.lastReq)
-    if elapsed < 15*time.Second {
-        time.Sleep(15*time.Second - elapsed)
-    }
-    c.lastReq = time.Now()
-    c.mu.Unlock()
+	if c.Cookie == "" {
+		return 0, 0, fmt.Errorf("JavDB Cookie 未配置")
+	}
 
-    // 调用 JavDB API 搜索
-    url := fmt.Sprintf("%s/api/v1/javdb/movies/search?q=%s", c.Endpoint, code)
-    resp, err := c.HTTP.Get(url)
-    if err != nil {
-        return 0, 0, err
-    }
-    defer resp.Body.Close()
-    body, _ := io.ReadAll(resp.Body)
+	// 查缓存
+	c.mu.Lock()
+	if entry, ok := c.cache[code]; ok {
+		if time.Since(entry.at) < 24*time.Hour {
+			c.mu.Unlock()
+			helpers.AppLogger.Infof("[JavDB] 命中缓存: %s => %.2f (%d人)", code, entry.rating, entry.votes)
+			return entry.rating, entry.votes, nil
+		}
+	}
 
-    var result struct {
-        Data []struct {
-            Rate         string `json:"rate"`
-            CommentCount string `json:"comment_count"`
-        } `json:"data"`
-    }
-    if err := json.Unmarshal(body, &result); err != nil {
-        return 0, 0, err
-    }
-    if len(result.Data) == 0 {
-        return 0, 0, fmt.Errorf("no result")
-    }
+	// 限速 15 秒
+	elapsed := time.Since(c.lastReq)
+	if elapsed < 15*time.Second {
+		wait := 15*time.Second - elapsed
+		c.mu.Unlock()
+		helpers.AppLogger.Infof("[JavDB] 限速等待 %.1f 秒", wait.Seconds())
+		time.Sleep(wait)
+		c.mu.Lock()
+	}
+	c.lastReq = time.Now()
+	c.mu.Unlock()
 
-    var rating float64
-    fmt.Sscanf(result.Data[0].Rate, "%f", &rating)
-    var votes int
-    fmt.Sscanf(result.Data[0].CommentCount, "%d", &votes)
-    return rating, votes, nil
+	searchURL := fmt.Sprintf("https://javdb.com/search?f=all&q=%s", code)
+	req, _ := http.NewRequest("GET", searchURL, nil)
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36")
+	req.Header.Set("Cookie", c.Cookie)
+	req.Header.Set("Referer", "https://javdb.com/")
+	req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9")
+
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return 0, 0, fmt.Errorf("请求搜索页失败: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return 0, 0, fmt.Errorf("JavDB HTTP %d", resp.StatusCode)
+	}
+
+	doc, err := goquery.NewDocumentFromReader(resp.Body)
+	if err != nil {
+		return 0, 0, fmt.Errorf("解析 HTML 失败: %w", err)
+	}
+
+	// Cloudflare 挑战识别
+	if doc.Find("div.movie-list").Length() == 0 {
+		return 0, 0, fmt.Errorf("JavDB 返回异常（可能触发 Cloudflare 挑战或 Cookie 过期）")
+	}
+
+	normalized := strings.ToUpper(strings.ReplaceAll(code, "-", ""))
+	var rating float64
+	var votes int
+	var found bool
+
+	doc.Find("div.movie-list div.item").EachWithBreak(func(i int, s *goquery.Selection) bool {
+		titleCode := strings.ToUpper(strings.TrimSpace(s.Find("div.video-title strong").Text()))
+		titleCode = strings.ReplaceAll(titleCode, "-", "")
+		if titleCode != normalized {
+			return true
+		}
+		scoreText := strings.TrimSpace(s.Find("div.score span.value").Text())
+		scoreText = strings.ReplaceAll(scoreText, "\n", " ")
+		scoreText = strings.Join(strings.Fields(scoreText), " ")
+
+		m := javdbScoreRe.FindStringSubmatch(scoreText)
+		if len(m) != 3 {
+			helpers.AppLogger.Warnf("[JavDB] 解析评分失败: %s", scoreText)
+			return false
+		}
+		fmt.Sscanf(m[1], "%f", &rating)
+		fmt.Sscanf(m[2], "%d", &votes)
+		found = true
+		return false
+	})
+
+	if !found {
+		return 0, 0, fmt.Errorf("JavDB 未找到番号 %s", code)
+	}
+
+	// 5 分制 → 10 分制
+	rating = rating * 2
+
+	c.mu.Lock()
+	c.cache[code] = &javdbRatingCache{rating: rating, votes: votes, at: time.Now()}
+	c.mu.Unlock()
+
+	helpers.AppLogger.Infof("[JavDB] %s => %.2f (%d人)", code, rating, votes)
+	return rating, votes, nil
 }
