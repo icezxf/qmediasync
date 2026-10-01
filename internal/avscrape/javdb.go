@@ -35,7 +35,7 @@ func NewJavDBClient(cookie string) *JavDBClient {
 	}
 }
 
-var javdbScoreRe = regexp.MustCompile(`([\d.]+)分,\s*由(\d+)人評價`)
+var javdbScoreRe = regexp.MustCompile(`([\d.]+)\s*[分,]?\s*(?:由|by)\s*(\d+)\s*(?:人評價|users)`)
 
 func (c *JavDBClient) GetRating(code string) (float64, int, error) {
 	if c.Cookie == "" {
