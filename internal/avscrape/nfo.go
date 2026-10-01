@@ -8,7 +8,7 @@ import (
 	"Q115-STRM/internal/models"
 )
 
-// GenerateNFO 生成 NFO 文本
+// GenerateNFO 根据 ScrapeResult 生成 NFO 文本
 func GenerateNFO(r *ScrapeResult) string {
 	if r == nil {
 		return ""
@@ -16,26 +16,26 @@ func GenerateNFO(r *ScrapeResult) string {
 	var sb strings.Builder
 	sb.WriteString(`<?xml version="1.0" encoding="UTF-8" ?>` + "\n")
 	sb.WriteString("<movie>\n")
+
 	sb.WriteString(fmt.Sprintf("  <title><![CDATA[%s]]></title>\n", r.Title))
 	sb.WriteString(fmt.Sprintf("  <originaltitle><![CDATA[%s]]></originaltitle>\n", r.OriginalTitle))
 	sb.WriteString(fmt.Sprintf("  <sorttitle><![CDATA[%s]]></sorttitle>\n", r.Code))
 	sb.WriteString(fmt.Sprintf("  <num>%s</num>\n", r.Code))
 	sb.WriteString(fmt.Sprintf("  <uniqueid type=\"num\" default=\"true\">%s</uniqueid>\n", r.Code))
 
-	if r.ReleaseDate != "" {
-		if len(r.ReleaseDate) >= 4 {
-			sb.WriteString(fmt.Sprintf("  <year>%s</year>\n", r.ReleaseDate[:4]))
-		}
-		sb.WriteString(fmt.Sprintf("  <premiered>%s</premiered>\n", r.ReleaseDate))
-		sb.WriteString(fmt.Sprintf("  <releasedate>%s</releasedate>\n", r.ReleaseDate))
+	if r.Oshash != "" {
+		sb.WriteString(fmt.Sprintf("  <uniqueid type=\"oshash\" default=\"false\">%s</uniqueid>\n", r.Oshash))
 	}
 
 	if r.Plot != "" {
 		sb.WriteString(fmt.Sprintf("  <plot><![CDATA[%s]]></plot>\n", r.Plot))
-		sb.WriteString(fmt.Sprintf("  <outline><![CDATA[%s]]></outline>\n", r.Plot))
 	}
 	if r.Runtime > 0 {
 		sb.WriteString(fmt.Sprintf("  <runtime>%d</runtime>\n", r.Runtime))
+	}
+	if r.ReleaseDate != "" {
+		sb.WriteString(fmt.Sprintf("  <premiered>%s</premiered>\n", r.ReleaseDate))
+		sb.WriteString(fmt.Sprintf("  <releasedate>%s</releasedate>\n", r.ReleaseDate))
 	}
 	if r.Director != "" {
 		sb.WriteString(fmt.Sprintf("  <director><![CDATA[%s]]></director>\n", r.Director))
@@ -49,39 +49,16 @@ func GenerateNFO(r *ScrapeResult) string {
 	if r.Series != "" {
 		sb.WriteString(fmt.Sprintf("  <series><![CDATA[%s]]></series>\n", r.Series))
 	}
-	// 多演员时输出"共演"作为系列
-	if len(r.Actors) >= 2 {
-		sb.WriteString("  <series>共演</series>\n")
-	}
-
-	sb.WriteString("  <country>JP</country>\n")
-	sb.WriteString("  <mpaa>JP-18+</mpaa>\n")
-	sb.WriteString("  <customrating>JP-18+</customrating>\n")
-
 	if r.Rating > 0 {
-		sb.WriteString(fmt.Sprintf("  <rating>%.1f</rating>\n", r.Rating))
-		sb.WriteString(fmt.Sprintf("  <criticrating>%.1f</criticrating>\n", r.Rating*10))
-		sb.WriteString("  <ratings>\n")
-		sb.WriteString("    <rating name=\"javdb\" max=\"10\" default=\"true\">\n")
-		sb.WriteString(fmt.Sprintf("      <value>%.1f</value>\n", r.Rating))
-		if r.Votes > 0 {
-			sb.WriteString(fmt.Sprintf("      <votes>%d</votes>\n", r.Votes))
-		} else {
-			sb.WriteString("      <votes/>\n")
-		}
-		sb.WriteString("    </rating>\n")
-		sb.WriteString("  </ratings>\n")
+		sb.WriteString(fmt.Sprintf("  <rating>%.2f</rating>\n", r.Rating))
 	}
-	if r.Votes > 0 {
-		sb.WriteString(fmt.Sprintf("  <votes>%d</votes>\n", r.Votes))
-	} else {
-		sb.WriteString("  <votes/>\n")
+	if r.Poster != "" {
+		sb.WriteString(fmt.Sprintf("  <poster>%s</poster>\n", r.Poster))
+		sb.WriteString(fmt.Sprintf("  <cover>%s</cover>\n", r.Poster))
 	}
-
-	sb.WriteString("  <poster>poster.jpg</poster>\n")
-	sb.WriteString("  <thumb>thumb.jpg</thumb>\n")
-	sb.WriteString("  <fanart>fanart.jpg</fanart>\n")
-
+	if r.Fanart != "" {
+		sb.WriteString(fmt.Sprintf("  <fanart>%s</fanart>\n", r.Fanart))
+	}
 	if r.Trailer != "" {
 		sb.WriteString(fmt.Sprintf("  <trailer>%s</trailer>\n", r.Trailer))
 	}
@@ -89,13 +66,6 @@ func GenerateNFO(r *ScrapeResult) string {
 	for _, g := range r.Genres {
 		sb.WriteString(fmt.Sprintf("  <genre><![CDATA[%s]]></genre>\n", g))
 		sb.WriteString(fmt.Sprintf("  <tag><![CDATA[%s]]></tag>\n", g))
-	}
-
-	// 多演员时输出"共演"合集
-	if len(r.Actors) >= 2 {
-		sb.WriteString("  <set>\n")
-		sb.WriteString("    <name>共演</name>\n")
-		sb.WriteString("  </set>\n")
 	}
 
 	for _, a := range r.Actors {
@@ -108,25 +78,18 @@ func GenerateNFO(r *ScrapeResult) string {
 		if a.Image != "" {
 			sb.WriteString(fmt.Sprintf("    <thumb>%s</thumb>\n", a.Image))
 		}
-		if a.Birthday != "" {
-			sb.WriteString(fmt.Sprintf("    <birthday>%s</birthday>\n", a.Birthday))
-		}
-		if a.Country != "" {
-			sb.WriteString(fmt.Sprintf("    <country>%s</country>\n", a.Country))
-		}
-		if a.Height > 0 {
-			sb.WriteString(fmt.Sprintf("    <height>%d</height>\n", a.Height))
-		}
 		sb.WriteString("  </actor>\n")
 	}
+
 	for _, u := range r.Urls {
 		sb.WriteString(fmt.Sprintf("  <website>%s</website>\n", u))
 	}
+
 	sb.WriteString("</movie>\n")
 	return sb.String()
 }
 
-// MediaFromResult
+// MediaFromResult 把 ScrapeResult 转成 AVMedia 入库
 func MediaFromResult(r *ScrapeResult) *models.AVMedia {
 	if r == nil {
 		return nil
@@ -135,6 +98,7 @@ func MediaFromResult(r *ScrapeResult) *models.AVMedia {
 	actors, _ := json.Marshal(r.Actors)
 	previews, _ := json.Marshal(r.PreviewImages)
 	urls, _ := json.Marshal(r.Urls)
+
 	return &models.AVMedia{
 		Code:          r.Code,
 		Title:         r.Title,
@@ -156,5 +120,6 @@ func MediaFromResult(r *ScrapeResult) *models.AVMedia {
 		Urls:          string(urls),
 		NFOContent:    GenerateNFO(r),
 		Source:        r.Source,
+		Oshash:        r.Oshash,
 	}
 }
