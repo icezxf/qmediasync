@@ -142,7 +142,11 @@ func (f *FSOpenList) Upload(localPath, remotePath string) error {
 }
 
 // GetURL 获取直链 + 缓存应使用的 header
-// 不改 openlist.go，用已有的 FileDetail 方法拿 RawURL 和 Header
+// 核心：直链签名按"生成直链时的 UA"算。
+// OpenList 生成直链时用的 UA，就是 qmediasync 调 /api/fs/get 时传的 openlist.DEFAULTUA。
+// 所以：
+//   1. OpenList 返回了 header → 用它
+//   2. 没返回 → 用 openlist.DEFAULTUA
 func (f *FSOpenList) GetURL(path string) (string, error) {
 	detail, err := f.client.FileDetail(path)
 	if err != nil || detail == nil || detail.RawURL == "" {
@@ -159,12 +163,19 @@ func (f *FSOpenList) GetURL(path string) (string, error) {
 			}
 			cacheURLHeader(detail.RawURL, h)
 			helpers.AppLogger.Infof("[FS-OpenList] GetURL path=%s, header=%v", path, hm)
+			return detail.RawURL, nil
 		} else if err != nil {
 			helpers.OpenListLog.Warnf("解析 OpenList header 失败: %v, 原文: %s", err, detail.Header)
 		}
-	} else {
-		helpers.AppLogger.Infof("[FS-OpenList] GetURL path=%s, OpenList 未返回 header, 将使用默认 UA", path)
 	}
+
+	// OpenList 没返回 header，用 openlist.DEFAULTUA
+	// 这是 qmediasync 调 OpenList 时的 UA，OpenList 会用它去请求 115 取直链，
+	// 所以直链签名绑的就是这个 UA
+	h := http.Header{}
+	h.Set("User-Agent", openlist.DEFAULTUA)
+	cacheURLHeader(detail.RawURL, h)
+	helpers.AppLogger.Infof("[FS-OpenList] OpenList 未返回 header，使用 openlist.DEFAULTUA: %s", openlist.DEFAULTUA)
 
 	return detail.RawURL, nil
 }
