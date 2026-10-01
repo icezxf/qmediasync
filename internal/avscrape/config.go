@@ -27,8 +27,14 @@ type Config struct {
 	JavDBCookie          string `json:"javdb_cookie"`
 	PreferChineseSource  bool   `json:"prefer_chinese_source"`
 
-	Watermark4K         bool `json:"watermark_4k"`
-	Watermark8K         bool `json:"watermark_8k"`
+	EnableOshashMatch bool `json:"enable_oshash_match"`
+
+	Watermark4K bool `json:"watermark_4k"`
+	Watermark5K bool `json:"watermark_5k"`
+	Watermark6K bool `json:"watermark_6k"`
+	Watermark7K bool `json:"watermark_7k"`
+	Watermark8K bool `json:"watermark_8k"`
+
 	WatermarkSubtitle   bool `json:"watermark_subtitle"`
 	WatermarkCrack      bool `json:"watermark_crack"`
 	WatermarkLeak       bool `json:"watermark_leak"`
@@ -51,8 +57,14 @@ var defaultConfig = Config{
 	EnableJavDBRating:    false,
 	PreferChineseSource:  true,
 
-	Watermark4K:         true,
-	Watermark8K:         true,
+	EnableOshashMatch: false,
+
+	Watermark4K: true,
+	Watermark5K: true,
+	Watermark6K: true,
+	Watermark7K: true,
+	Watermark8K: true,
+
 	WatermarkSubtitle:   true,
 	WatermarkCrack:      true,
 	WatermarkLeak:       true,
