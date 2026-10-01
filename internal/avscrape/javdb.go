@@ -37,14 +37,11 @@ func NewJavDBClient(cookie string) *JavDBClient {
 
 var javdbScoreRe = regexp.MustCompile(`([\d.]+)分,\s*由(\d+)人評價`)
 
-// GetRating 从 JavDB 搜索页解析评分
-// 内置：15 秒串行限速、24 小时内存缓存、Cloudflare 挑战识别
 func (c *JavDBClient) GetRating(code string) (float64, int, error) {
 	if c.Cookie == "" {
 		return 0, 0, fmt.Errorf("JavDB Cookie 未配置")
 	}
 
-	// 查缓存
 	c.mu.Lock()
 	if entry, ok := c.cache[code]; ok {
 		if time.Since(entry.at) < 24*time.Hour {
@@ -54,7 +51,6 @@ func (c *JavDBClient) GetRating(code string) (float64, int, error) {
 		}
 	}
 
-	// 限速 15 秒
 	elapsed := time.Since(c.lastReq)
 	if elapsed < 15*time.Second {
 		wait := 15*time.Second - elapsed
@@ -88,7 +84,6 @@ func (c *JavDBClient) GetRating(code string) (float64, int, error) {
 		return 0, 0, fmt.Errorf("解析 HTML 失败: %w", err)
 	}
 
-	// Cloudflare 挑战识别
 	if doc.Find("div.movie-list").Length() == 0 {
 		return 0, 0, fmt.Errorf("JavDB 返回异常（可能触发 Cloudflare 挑战或 Cookie 过期）")
 	}
@@ -123,7 +118,6 @@ func (c *JavDBClient) GetRating(code string) (float64, int, error) {
 		return 0, 0, fmt.Errorf("JavDB 未找到番号 %s", code)
 	}
 
-	// 5 分制 → 10 分制
 	rating = rating * 2
 
 	c.mu.Lock()
