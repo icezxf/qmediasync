@@ -32,13 +32,12 @@ func NewWikiClient() *WikiClient {
 }
 
 // GetChineseName 查询维基百科的日中跨语言链接
-// 返回中文名；如果找不到，返回空字符串
+// 返回中文名；找不到返回空字符串
 func (w *WikiClient) GetChineseName(japaneseName string) (string, error) {
 	if japaneseName == "" {
 		return "", nil
 	}
 
-	// 查缓存（24 小时）
 	w.mu.Lock()
 	if entry, ok := w.cache[japaneseName]; ok {
 		if time.Since(entry.at) < 24*time.Hour {
@@ -46,8 +45,6 @@ func (w *WikiClient) GetChineseName(japaneseName string) (string, error) {
 			return entry.zh, nil
 		}
 	}
-
-	// 限速：最少 500ms 一次，避免被维基封
 	elapsed := time.Since(w.lastReq)
 	if elapsed < 500*time.Millisecond {
 		w.mu.Unlock()
@@ -57,12 +54,10 @@ func (w *WikiClient) GetChineseName(japaneseName string) (string, error) {
 	w.lastReq = time.Now()
 	w.mu.Unlock()
 
-	// 调日文维基 API
 	endpoint := fmt.Sprintf(
 		"https://ja.wikipedia.org/w/api.php?action=query&titles=%s&prop=langlinks&lllang=zh&format=json&redirects=1",
 		url.QueryEscape(japaneseName),
 	)
-
 	req, _ := http.NewRequest("GET", endpoint, nil)
 	req.Header.Set("User-Agent", "QMediaSync/1.0 (AV Scraper)")
 
@@ -71,7 +66,6 @@ func (w *WikiClient) GetChineseName(japaneseName string) (string, error) {
 		return "", err
 	}
 	defer resp.Body.Close()
-
 	body, _ := io.ReadAll(resp.Body)
 
 	var result struct {
@@ -99,7 +93,6 @@ func (w *WikiClient) GetChineseName(japaneseName string) (string, error) {
 		}
 	}
 
-	// 写缓存（没找到也缓存，避免重复请求）
 	w.mu.Lock()
 	w.cache[japaneseName] = &wikiCache{zh: zhName, at: time.Now()}
 	w.mu.Unlock()
@@ -113,11 +106,9 @@ func (w *WikiClient) GetChineseName(japaneseName string) (string, error) {
 }
 
 // TranslateActorNames 批量查询演员中文名
-// 返回的 Actor 列表会被就地修改
 func (w *WikiClient) TranslateActorNames(actors []Actor) []Actor {
 	for i := range actors {
-		// 已经是中文就跳过
-		if containsChinese(actors[i].Name) {
+		if isChineseName(actors[i].Name) {
 			continue
 		}
 		if zh, err := w.GetChineseName(actors[i].Name); err == nil && zh != "" {
