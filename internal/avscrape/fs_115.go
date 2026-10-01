@@ -78,7 +78,6 @@ func (f *FS115) Read(path string) ([]byte, error) {
 	return helpers.ReadFromUrl(url, v115open.DEFAULTUA)
 }
 
-// Write 上传文件，如果目标已存在先删除再上传
 func (f *FS115) Write(path string, data []byte) error {
 	if f.Exists(path) {
 		if err := f.Delete(path); err != nil {
@@ -231,4 +230,83 @@ func (f *FS115) GetURL(path string) (string, error) {
 		return "", fmt.Errorf("获取直链失败: %s", path)
 	}
 	return url, nil
+}
+
+// QueueUploads 把本地文件加入上传队列（异步走 GlobalUploadQueue）
+func (f *FS115) QueueUploads(files []LocalFile, dstDir string, accountId uint, sourceType string) (int, error) {
+	if len(files) == 0 {
+		return 0, nil
+	}
+
+	if err := f.MkdirAll(dstDir); err != nil {
+		return 0, fmt.Errorf("创建目标目录失败: %w", err)
+	}
+
+	dstDetail, err := f.client.GetFsDetailByPath(f.ctx, dstDir)
+	if err != nil || dstDetail == nil || dstDetail.FileId == "" {
+		return 0, fmt.Errorf("获取目标目录失败: %s", dstDir)
+	}
+	dstDirId := dstDetail.FileId
+
+	subDirCache := map[string]string{}
+
+	count := 0
+	for _, file := range files {
+		parentId := dstDirId
+		remoteName := file.RemoteName
+		if idx := strings.LastIndex(remoteName, "/"); idx > 0 {
+			subDir := remoteName[:idx]
+			fileName := remoteName[idx+1:]
+			subId, ok := subDirCache[subDir]
+			if !ok {
+				subId, err = f.ensureSubDirCached(dstDirId, dstDir, subDir, subDirCache)
+				if err != nil {
+					helpers.AppLogger.Warnf("[AV上传队列] 创建子目录失败 %s: %v", subDir, err)
+					continue
+				}
+			}
+			parentId = subId
+			remoteName = fileName
+		}
+
+		remoteFullPath := dstDir + "/" + file.RemoteName
+		if err := models.AddUploadTaskFromAV(accountId, models.SourceType(sourceType), remoteName, file.LocalPath, remoteFullPath, parentId); err != nil {
+			helpers.AppLogger.Warnf("[AV上传队列] %s 加入队列失败: %v", file.RemoteName, err)
+			continue
+		}
+		helpers.AppLogger.Infof("[AV上传队列] %s 已加入队列 (remote=%s, parentId=%s)", file.RemoteName, remoteFullPath, parentId)
+		count++
+	}
+	return count, nil
+}
+
+func (f *FS115) ensureSubDirCached(rootId, rootPath, subDir string, cache map[string]string) (string, error) {
+	parts := strings.Split(strings.Trim(subDir, "/"), "/")
+	currentId := rootId
+	currentPath := rootPath
+	for i := 0; i < len(parts); i++ {
+		subPath := parts[i]
+		fullPath := currentPath + "/" + subPath
+		cacheKey := strings.Join(parts[:i+1], "/")
+		if id, ok := cache[cacheKey]; ok {
+			currentId = id
+			currentPath = fullPath
+			continue
+		}
+		detail, err := f.client.GetFsDetailByPath(f.ctx, fullPath)
+		if err == nil && detail != nil && detail.FileId != "" {
+			cache[cacheKey] = detail.FileId
+			currentId = detail.FileId
+			currentPath = fullPath
+			continue
+		}
+		newId, err := f.client.MkDir(f.ctx, currentId, subPath)
+		if err != nil {
+			return "", fmt.Errorf("创建子目录失败 %s: %w", fullPath, err)
+		}
+		cache[cacheKey] = newId
+		currentId = newId
+		currentPath = fullPath
+	}
+	return currentId, nil
 }
