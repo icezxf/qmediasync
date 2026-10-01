@@ -32,7 +32,6 @@ func NewWikiClient() *WikiClient {
 }
 
 // GetChineseName 查询维基百科的日中跨语言链接
-// 返回中文名；找不到返回空字符串
 func (w *WikiClient) GetChineseName(japaneseName string) (string, error) {
 	if japaneseName == "" {
 		return "", nil
@@ -106,9 +105,9 @@ func (w *WikiClient) GetChineseName(japaneseName string) (string, error) {
 }
 
 // TranslateActorNames 批量查询演员中文名
+// 无条件走 wiki：日文名会查到中文名，已是中文的名字查不到会保持原样
 func (w *WikiClient) TranslateActorNames(actors []Actor) []Actor {
 	for i := range actors {
-		// 无条件走 wiki：日文名会查到中文名，已是中文的名字查不到会保持原样
 		if zh, err := w.GetChineseName(actors[i].Name); err == nil && zh != "" {
 			actors[i].Name = zh
 		}
