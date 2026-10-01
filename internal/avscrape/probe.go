@@ -11,25 +11,11 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	"Q115-STRM/internal/helpers"
 	"Q115-STRM/internal/v115open"
 )
-
-// 候选 UA 列表，按优先级依次尝试
-// 115 CDN 现在可能只接受特定 UA，用哪个不知道，所以都试一遍
-var uaCandidates = []string{
-	v115open.DEFAULTUA,
-	"Mozilla/5.0 115Browser/27.0.5.7",
-	"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-	"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-	"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0",
-}
-
-// 记住上次成功的 UA，下次直接用
-var lastWorkingUA atomic.Value
 
 var uncensoredPrefixes = []string{
 	"Carib", "carib", "1Pondo", "1pondo", "Heyzo", "HEYZO",
@@ -88,41 +74,33 @@ type probeResult struct {
 }
 
 // downloadHead 下载头部 N 字节，同时返回文件总大小
-// 自动尝试多个 UA，找到能用的就记住
+// 会优先使用 urlHeaderCache 里缓存的 header（OpenList 返回的 UA）
 func downloadHead(url string, nBytes int64) (string, int64, error) {
-	// 优先用上次成功的 UA
-	if last := lastWorkingUA.Load(); last != nil {
-		if path, size, err := tryDownloadHead(url, nBytes, last.(string)); err == nil {
-			return path, size, nil
-		}
-	}
-
-	// 遍历候选 UA
-	var lastErr error
-	for i, ua := range uaCandidates {
-		path, size, err := tryDownloadHead(url, nBytes, ua)
-		if err == nil {
-			lastWorkingUA.Store(ua)
-			if i > 0 {
-				helpers.AppLogger.Infof("[AV探测] 使用 UA[%d]: %s", i, ua)
-			}
-			return path, size, nil
-		}
-		lastErr = err
-	}
-	return "", 0, fmt.Errorf("所有 UA 均失败，最后错误: %w", lastErr)
-}
-
-func tryDownloadHead(url string, nBytes int64, ua string) (string, int64, error) {
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return "", 0, err
 	}
-	req.Header.Set("User-Agent", ua)
+	req.Header.Set("User-Agent", v115open.DEFAULTUA)
 	req.Header.Set("Accept", "*/*")
 	req.Header.Set("Accept-Encoding", "identity")
 	req.Header.Set("Connection", "keep-alive")
 	req.Header.Set("Range", fmt.Sprintf("bytes=0-%d", nBytes-1))
+
+	// ===== 覆盖 OpenList 返回的 header（含正确 UA） =====
+	if h := getURLHeader(url); h != nil {
+		for k, vs := range h {
+			req.Header.Del(k)
+			for _, v := range vs {
+				req.Header.Add(k, v)
+			}
+		}
+		helpers.AppLogger.Infof("[AV探测] 使用 OpenList header UA=%s", req.Header.Get("User-Agent"))
+	} else {
+		helpers.AppLogger.Infof("[AV探测] 未找到 header 缓存，使用默认 UA=%s", req.Header.Get("User-Agent"))
+	}
+	// ====================================================
+
+	helpers.AppLogger.Infof("[AV探测] 请求 URL: %s", redactURL(url))
 
 	client := &http.Client{Timeout: 30 * time.Second}
 	resp, err := client.Do(req)
@@ -131,7 +109,14 @@ func tryDownloadHead(url string, nBytes int64, ua string) (string, int64, error)
 	}
 	defer resp.Body.Close()
 
+	helpers.AppLogger.Infof("[AV探测] 响应状态: %d %s", resp.StatusCode, resp.Status)
+
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
+		// 读取错误响应体，里面可能有 115 的拒绝原因
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		if len(body) > 0 {
+			helpers.AppLogger.Infof("[AV探测] 错误响应体: %s", string(body))
+		}
 		return "", 0, fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
 
@@ -162,26 +147,30 @@ func tryDownloadHead(url string, nBytes int64, ua string) (string, int64, error)
 	return tmpPath, fileSize, nil
 }
 
-// downloadTail 下载文件尾部 64KB
+// downloadTail 下载文件尾部 64KB，用于计算 oshash
 func downloadTail(url string, fileSize int64) ([]byte, error) {
 	if fileSize < 128*1024 {
 		return nil, fmt.Errorf("文件太小")
 	}
 	start := fileSize - 64*1024
-
-	// 用上次成功的 UA，找不到就默认
-	ua := v115open.DEFAULTUA
-	if last := lastWorkingUA.Load(); last != nil {
-		ua = last.(string)
-	}
-
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", ua)
+	req.Header.Set("User-Agent", v115open.DEFAULTUA)
 	req.Header.Set("Accept", "*/*")
 	req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", start, fileSize-1))
+
+	// ===== 覆盖 OpenList 返回的 header =====
+	if h := getURLHeader(url); h != nil {
+		for k, vs := range h {
+			req.Header.Del(k)
+			for _, v := range vs {
+				req.Header.Add(k, v)
+			}
+		}
+	}
+	// ======================================
 
 	client := &http.Client{Timeout: 30 * time.Second}
 	resp, err := client.Do(req)
@@ -210,6 +199,14 @@ func computeOshash(head, tail []byte, fileSize int64) string {
 		hash += binary.LittleEndian.Uint64(tail[i : i+8])
 	}
 	return fmt.Sprintf("%016x", hash)
+}
+
+// redactURL URL 太长时截断日志输出
+func redactURL(raw string) string {
+	if len(raw) > 200 {
+		return raw[:200] + "..."
+	}
+	return raw
 }
 
 // probeVideo 下载头部 + 尾部 → ffprobe 读本地 → 算 oshash
@@ -281,6 +278,7 @@ func probeVideo(videoURL string) (*probeResult, error) {
 		FileSize:   fileSize,
 	}
 
+	// 计算 oshash（多一次尾部请求）
 	if fileSize > 128*1024 {
 		tailData, err := downloadTail(videoURL, fileSize)
 		if err == nil {
@@ -297,6 +295,7 @@ func probeVideo(videoURL string) (*probeResult, error) {
 	return pr, nil
 }
 
+// classifyResolution 按长边判断，覆盖普通 + VR 各种分辨率
 func classifyResolution(w, h int) string {
 	if w == 0 && h == 0 {
 		return ""
