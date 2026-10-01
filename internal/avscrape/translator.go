@@ -63,50 +63,9 @@ func (t *Translator) Translate(text string) (string, error) {
 }
 
 // ============================================================
-// Gemini 引擎（Interactions API）
+// Gemini 引擎（Interactions API，带重试）
 // ============================================================
 
-// geminiCall 调用 Gemini Interactions API，返回纯文本
-func (t *Translator) geminiCall(prompt string) (string, error) {
-	if t.GeminiKey == "" {
-		return "", fmt.Errorf("Gemini API Key 未配置")
-	}
-	model := t.GeminiModel
-	if model == "" {
-		model = "gemini-3.8-flash"
-	}
-
-	endpoint := "https://generativelanguage.googleapis.com/v1beta/interactions"
-
-	body := map[string]interface{}{
-		"model": model,
-		"input": prompt,
-	}
-	payload, _ := json.Marshal(body)
-
-	req, _ := http.NewRequest("POST", endpoint, bytes.NewReader(payload))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-goog-api-key", t.GeminiKey)
-
-	resp, err := t.HTTP.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	respBody, _ := io.ReadAll(resp.Body)
-
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("Gemini HTTP %d: %s", resp.StatusCode, string(respBody))
-	}
-
-	var out geminiInteractionResp
-	if err := json.Unmarshal(respBody, &out); err != nil {
-		return "", err
-	}
-	return extractGeminiText(&out)
-}
-
-// geminiInteractionResp Interactions API 返回结构
 type geminiInteractionResp struct {
 	Status string `json:"status"`
 	Steps  []struct {
@@ -118,7 +77,6 @@ type geminiInteractionResp struct {
 	} `json:"steps"`
 }
 
-// extractGeminiText 从 steps 里取 model_output 的文本
 func extractGeminiText(out *geminiInteractionResp) (string, error) {
 	for _, s := range out.Steps {
 		if s.Type == "model_output" {
@@ -132,20 +90,74 @@ func extractGeminiText(out *geminiInteractionResp) (string, error) {
 	return "", fmt.Errorf("Gemini 返回为空")
 }
 
-// geminiTranslate 单字段翻译
+// geminiCall 带重试的 Gemini 调用
+// 503 / 429 时最多重试 5 次，间隔 15 秒
+func (t *Translator) geminiCall(prompt string) (string, error) {
+	if t.GeminiKey == "" {
+		return "", fmt.Errorf("Gemini API Key 未配置")
+	}
+	model := t.GeminiModel
+	if model == "" {
+		model = "gemini-3.8-flash"
+	}
+
+	endpoint := "https://generativelanguage.googleapis.com/v1beta/interactions"
+	body := map[string]interface{}{
+		"model": model,
+		"input": prompt,
+	}
+	payload, _ := json.Marshal(body)
+
+	const maxAttempts = 5
+	var lastErr error
+	var lastBody string
+
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		if attempt > 1 {
+			helpers.AppLogger.Infof("[Gemini] 第 %d 次重试（前次失败: %v）", attempt, lastErr)
+			time.Sleep(15 * time.Second)
+		}
+
+		req, _ := http.NewRequest("POST", endpoint, bytes.NewReader(payload))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-goog-api-key", t.GeminiKey)
+
+		resp, err := t.HTTP.Do(req)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		respBody, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		lastBody = string(respBody)
+
+		if resp.StatusCode == http.StatusOK {
+			var out geminiInteractionResp
+			if err := json.Unmarshal(respBody, &out); err != nil {
+				lastErr = err
+				continue
+			}
+			return extractGeminiText(&out)
+		}
+
+		if resp.StatusCode == 503 || resp.StatusCode == 429 {
+			lastErr = fmt.Errorf("Gemini HTTP %d", resp.StatusCode)
+			continue
+		}
+		return "", fmt.Errorf("Gemini HTTP %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	return "", fmt.Errorf("Gemini 重试 %d 次均失败: %v, 最后返回: %s", maxAttempts, lastErr, lastBody)
+}
+
 func (t *Translator) geminiTranslate(text string) (string, error) {
 	prompt := fmt.Sprintf("请把下面的日文翻译成简体中文，只返回翻译结果，不要加任何解释、不要加引号：\n%s", text)
 	return t.geminiCall(prompt)
 }
 
-// geminiTranslateAll 一次请求翻译整部影片
 func (t *Translator) geminiTranslateAll(r *ScrapeResult) error {
 	if t.GeminiKey == "" {
 		return fmt.Errorf("Gemini API Key 未配置")
-	}
-	model := t.GeminiModel
-	if model == "" {
-		model = "gemini-3.8-flash"
 	}
 
 	actorNames := make([]string, 0, len(r.Actors))
@@ -175,38 +187,11 @@ func (t *Translator) geminiTranslateAll(r *ScrapeResult) error {
 
 请直接返回翻译后的 JSON，结构必须和输入完全一致（title/plot/actors/genres 四个字段）。`, string(inputJSON))
 
-	endpoint := "https://generativelanguage.googleapis.com/v1beta/interactions"
-	body := map[string]interface{}{
-		"model": model,
-		"input": prompt,
-	}
-	payload, _ := json.Marshal(body)
-
-	req, _ := http.NewRequest("POST", endpoint, bytes.NewReader(payload))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-goog-api-key", t.GeminiKey)
-
-	resp, err := t.HTTP.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	respBody, _ := io.ReadAll(resp.Body)
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("Gemini HTTP %d: %s", resp.StatusCode, string(respBody))
-	}
-
-	var out geminiInteractionResp
-	if err := json.Unmarshal(respBody, &out); err != nil {
-		return err
-	}
-	raw, err := extractGeminiText(&out)
+	raw, err := t.geminiCall(prompt)
 	if err != nil {
 		return err
 	}
 
-	// 去掉可能的 markdown 包裹
 	raw = strings.TrimPrefix(raw, "```json")
 	raw = strings.TrimPrefix(raw, "```")
 	raw = strings.TrimSuffix(raw, "```")
@@ -260,12 +245,15 @@ func (t *Translator) TranslateResult(r *ScrapeResult) {
 		return
 	}
 
+	skipActors := false
+
 	if t.Engine == "gemini" {
 		if err := t.geminiTranslateAll(r); err == nil {
 			return
 		} else {
 			helpers.AppLogger.Warnf("[翻译] Gemini 失败，降级到 DeepL: %v", err)
 			t.Engine = "deepl"
+			skipActors = true
 		}
 	}
 
@@ -282,12 +270,18 @@ func (t *Translator) TranslateResult(r *ScrapeResult) {
 			r.Genres[i] = s
 		}
 	}
-	for i := range r.Actors {
-		if !containsChinese(r.Actors[i].Name) {
-			if s, err := t.Translate(r.Actors[i].Name); err == nil && s != "" && s != r.Actors[i].Name {
-				r.Actors[i].Name = s
+
+	if !skipActors {
+		for i := range r.Actors {
+			// 严格判断：只有真正的纯中文名才跳过翻译
+			if !isChineseName(r.Actors[i].Name) {
+				if s, err := t.Translate(r.Actors[i].Name); err == nil && s != "" && s != r.Actors[i].Name {
+					r.Actors[i].Name = s
+				}
 			}
 		}
+	} else {
+		helpers.AppLogger.Infof("[翻译] 降级模式：跳过演员名翻译，保留原文")
 	}
 }
 
