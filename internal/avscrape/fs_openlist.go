@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"Q115-STRM/internal/helpers"
@@ -69,7 +70,6 @@ func (f *FSOpenList) Read(path string) ([]byte, error) {
 	return helpers.ReadFromUrl(url, v115open.DEFAULTUA)
 }
 
-// Write 上传文件，如果目标已存在先删除再上传
 func (f *FSOpenList) Write(path string, data []byte) error {
 	if f.Exists(path) {
 		if err := f.Delete(path); err != nil {
@@ -141,11 +141,44 @@ func (f *FSOpenList) Upload(localPath, remotePath string) error {
 	return err
 }
 
-// GetURL 获取直链（用于 ffprobe）
 func (f *FSOpenList) GetURL(path string) (string, error) {
 	url := f.client.GetRawUrl(path)
 	if url == "" {
 		return "", fmt.Errorf("获取直链失败: %s", path)
 	}
 	return url, nil
+}
+
+// QueueUploads 把本地文件加入上传队列
+func (f *FSOpenList) QueueUploads(files []LocalFile, dstDir string, accountId uint, sourceType string) (int, error) {
+	if len(files) == 0 {
+		return 0, nil
+	}
+
+	_ = f.client.Mkdir(dstDir)
+
+	createdSubDirs := map[string]bool{}
+
+	count := 0
+	for _, file := range files {
+		remotePath := dstDir + "/" + file.RemoteName
+
+		parentPath := dstDir
+		if idx := strings.LastIndex(file.RemoteName, "/"); idx > 0 {
+			parentPath = dstDir + "/" + file.RemoteName[:idx]
+			if !createdSubDirs[parentPath] {
+				_ = f.client.Mkdir(parentPath)
+				createdSubDirs[parentPath] = true
+			}
+		}
+
+		fileName := filepath.Base(file.RemoteName)
+		if err := models.AddUploadTaskFromAV(accountId, models.SourceType(sourceType), fileName, file.LocalPath, remotePath, parentPath); err != nil {
+			helpers.AppLogger.Warnf("[AV上传队列] %s 加入队列失败: %v", file.RemoteName, err)
+			continue
+		}
+		helpers.AppLogger.Infof("[AV上传队列] %s 已加入队列 (remote=%s)", file.RemoteName, remotePath)
+		count++
+	}
+	return count, nil
 }
