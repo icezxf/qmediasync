@@ -49,7 +49,6 @@ type Provider interface {
 	Detail(code string, providerID string) (*ScrapeResult, error)
 }
 
-// containsChinese 含汉字（宽松），仅用于判断标题/简介里是否含中文
 func containsChinese(s string) bool {
 	for _, r := range s {
 		if r >= 0x4E00 && r <= 0x9FFF {
@@ -59,7 +58,6 @@ func containsChinese(s string) bool {
 	return false
 }
 
-// isJapanese 含日文假名
 func isJapanese(s string) bool {
 	for _, r := range s {
 		if (r >= 0x3040 && r <= 0x309F) || (r >= 0x30A0 && r <= 0x30FF) {
@@ -70,26 +68,19 @@ func isJapanese(s string) bool {
 }
 
 // isChineseName 严格判断是否为中文名
-// 规则：
-//   - 至少含一个汉字
-//   - 不含假名（平假名/片假名）
-//   - 不含罗马字母
-// 注意：像"岩谷志季"这种纯汉字日文名仍会被误判为中文名，无法完全区分
+// 至少含汉字，且不含假名、不含罗马字母
 func isChineseName(s string) bool {
 	if s == "" {
 		return false
 	}
 	hasChinese := false
 	for _, r := range s {
-		// 假名
 		if (r >= 0x3040 && r <= 0x309F) || (r >= 0x30A0 && r <= 0x30FF) {
 			return false
 		}
-		// 罗马字母
 		if (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') {
 			return false
 		}
-		// 汉字
 		if r >= 0x4E00 && r <= 0x9FFF {
 			hasChinese = true
 		}
