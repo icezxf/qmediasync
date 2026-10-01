@@ -2,7 +2,9 @@ package avscrape
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -76,7 +78,6 @@ func (f *FSOpenList) Write(path string, data []byte) error {
 			helpers.AppLogger.Warnf("[FS-OpenList] 删除已存在文件失败: %s => %v", path, err)
 		}
 	}
-
 	tmpFile, err := os.CreateTemp("", "avscrape-*")
 	if err != nil {
 		return err
@@ -88,7 +89,6 @@ func (f *FSOpenList) Write(path string, data []byte) error {
 		return err
 	}
 	tmpFile.Close()
-
 	_, err = f.client.Upload(tmpPath, path)
 	return err
 }
@@ -141,28 +141,43 @@ func (f *FSOpenList) Upload(localPath, remotePath string) error {
 	return err
 }
 
+// GetURL 获取直链 + 缓存应使用的 header
+// 不改 openlist.go，用已有的 FileDetail 方法拿 RawURL 和 Header
 func (f *FSOpenList) GetURL(path string) (string, error) {
-	url := f.client.GetRawUrl(path)
-	if url == "" {
-		return "", fmt.Errorf("获取直链失败: %s", path)
+	detail, err := f.client.FileDetail(path)
+	if err != nil || detail == nil || detail.RawURL == "" {
+		return "", fmt.Errorf("获取直链失败: %s, %v", path, err)
 	}
-	return url, nil
+
+	// OpenList 返回的 header 是 JSON 字符串，里面含正确的 UA
+	if detail.Header != "" && detail.Header != "null" && detail.Header != "{}" {
+		var hm map[string]string
+		if err := json.Unmarshal([]byte(detail.Header), &hm); err == nil && len(hm) > 0 {
+			h := http.Header{}
+			for k, v := range hm {
+				h.Set(k, v)
+			}
+			cacheURLHeader(detail.RawURL, h)
+			helpers.AppLogger.Infof("[FS-OpenList] GetURL path=%s, header=%v", path, hm)
+		} else if err != nil {
+			helpers.OpenListLog.Warnf("解析 OpenList header 失败: %v, 原文: %s", err, detail.Header)
+		}
+	} else {
+		helpers.AppLogger.Infof("[FS-OpenList] GetURL path=%s, OpenList 未返回 header, 将使用默认 UA", path)
+	}
+
+	return detail.RawURL, nil
 }
 
-// QueueUploads 把本地文件加入上传队列
 func (f *FSOpenList) QueueUploads(files []LocalFile, dstDir string, accountId uint, sourceType string) (int, error) {
 	if len(files) == 0 {
 		return 0, nil
 	}
-
 	_ = f.client.Mkdir(dstDir)
-
 	createdSubDirs := map[string]bool{}
-
 	count := 0
 	for _, file := range files {
 		remotePath := dstDir + "/" + file.RemoteName
-
 		parentPath := dstDir
 		if idx := strings.LastIndex(file.RemoteName, "/"); idx > 0 {
 			parentPath = dstDir + "/" + file.RemoteName[:idx]
@@ -171,7 +186,6 @@ func (f *FSOpenList) QueueUploads(files []LocalFile, dstDir string, accountId ui
 				createdSubDirs[parentPath] = true
 			}
 		}
-
 		fileName := filepath.Base(file.RemoteName)
 		if err := models.AddUploadTaskFromAV(accountId, models.SourceType(sourceType), fileName, file.LocalPath, remotePath, parentPath); err != nil {
 			helpers.AppLogger.Warnf("[AV上传队列] %s 加入队列失败: %v", file.RemoteName, err)
