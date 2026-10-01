@@ -49,6 +49,11 @@ func GenerateNFO(r *ScrapeResult) string {
 	if r.Series != "" {
 		sb.WriteString(fmt.Sprintf("  <series><![CDATA[%s]]></series>\n", r.Series))
 	}
+	// 多演员时输出"共演"作为系列
+	if len(r.Actors) >= 2 {
+		sb.WriteString("  <series>共演</series>\n")
+	}
+
 	sb.WriteString("  <country>JP</country>\n")
 	sb.WriteString("  <mpaa>JP-18+</mpaa>\n")
 	sb.WriteString("  <customrating>JP-18+</customrating>\n")
@@ -85,6 +90,14 @@ func GenerateNFO(r *ScrapeResult) string {
 		sb.WriteString(fmt.Sprintf("  <genre><![CDATA[%s]]></genre>\n", g))
 		sb.WriteString(fmt.Sprintf("  <tag><![CDATA[%s]]></tag>\n", g))
 	}
+
+	// 多演员时输出"共演"合集
+	if len(r.Actors) >= 2 {
+		sb.WriteString("  <set>\n")
+		sb.WriteString("    <name>共演</name>\n")
+		sb.WriteString("  </set>\n")
+	}
+
 	for _, a := range r.Actors {
 		sb.WriteString("  <actor>\n")
 		sb.WriteString(fmt.Sprintf("    <name><![CDATA[%s]]></name>\n", a.Name))
@@ -113,7 +126,7 @@ func GenerateNFO(r *ScrapeResult) string {
 	return sb.String()
 }
 
-// MediaFromResult 把 ScrapeResult 转成 AVMedia 入库
+// MediaFromResult
 func MediaFromResult(r *ScrapeResult) *models.AVMedia {
 	if r == nil {
 		return nil
