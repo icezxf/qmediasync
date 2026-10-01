@@ -59,7 +59,7 @@ func (s *Service) Scrape(code string) (*ScrapeResult, error) {
 
 	best := mergeResults(allResults, cfg)
 
-	// ===== JavDB 评分（搜索页解析）=====
+	// JavDB 评分（搜索页解析）
 	if cfg.EnableJavDBRating && cfg.JavDBCookie != "" {
 		client := NewJavDBClient(cfg.JavDBCookie)
 		if rating, votes, err := client.GetRating(code); err == nil && rating > 0 {
@@ -71,7 +71,7 @@ func (s *Service) Scrape(code string) (*ScrapeResult, error) {
 		}
 	}
 
-	// ===== 翻译 =====
+	// 翻译
 	if cfg.EnableTranslate {
 		tr := NewTranslator(cfg.TranslateEngine, cfg.TranslateTarget)
 		tr.DeepLKey = cfg.TranslateDeepLKey
@@ -249,10 +249,24 @@ func mergeResults(results []*ScrapeResult, cfg *Config) *ScrapeResult {
 		}
 	}
 
+	// 多演员（>=2）加"共演"标签
+	if len(best.Actors) >= 2 {
+		hasEnsemble := false
+		for _, g := range best.Genres {
+			if g == "共演" {
+				hasEnsemble = true
+				break
+			}
+		}
+		if !hasEnsemble {
+			best.Genres = append(best.Genres, "共演")
+		}
+	}
+
 	return &best
 }
 
-// aliasMatch 演员去重：名字 + aliases 交叉匹配 + 归一化
+// aliasMatch 演员去重
 func aliasMatch(a, b Actor) bool {
 	an := normalizeName(a.Name)
 	bn := normalizeName(b.Name)
