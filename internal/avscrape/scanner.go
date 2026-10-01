@@ -247,19 +247,19 @@ func (s *Scanner) detectVideoMeta(fs FileSystem, fullPath string, r *ScrapeResul
 	}
 }
 
-// resolutionSuffix 分辨率 → 文件名后缀
+// resolutionSuffix 分辨率 → 文件名后缀（大写 K）
 func resolutionSuffix(res string) string {
 	switch res {
 	case "8K":
-		return "-8k"
+		return "-8K"
 	case "7K":
-		return "-7k"
+		return "-7K"
 	case "6K":
-		return "-6k"
+		return "-6K"
 	case "5K":
-		return "-5k"
+		return "-5K"
 	case "4K":
-		return "-4k"
+		return "-4K"
 	}
 	return ""
 }
@@ -267,6 +267,7 @@ func resolutionSuffix(res string) string {
 // ============================================================
 // organize 移动所有 CD 文件到目标目录 + 元数据入上传队列
 // 文件名规则：{code}{-分辨率}{-cdN}{ext}
+// 例：SSNI-658-cd1.mp4 → SSNI-658-4K-cd1.mp4
 // ============================================================
 func (s *Scanner) organize(fs FileSystem, path *models.AVPath, media *models.AVMedia, videoPaths []string, r *ScrapeResult, cfg *Config) error {
 	relDir := renderTemplate(path.NameTemplate, media)
