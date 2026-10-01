@@ -29,6 +29,9 @@ var videoExts = map[string]bool{
 
 var invalidPathChars = regexp.MustCompile(`[\\/:*?"<>|]`)
 
+// 匹配 cd1/cd2/part1/part2 等多碟后缀
+var cdPartRegex = regexp.MustCompile(`(?i)([-_]?(cd|part|disc|disk)\d+)`)
+
 type Scanner struct {
 	DB  *gorm.DB
 	Svc *Service
@@ -38,7 +41,6 @@ func NewScanner(db *gorm.DB) *Scanner {
 	return &Scanner{DB: db, Svc: NewService(db)}
 }
 
-// scanDirRecursive 递归扫描目录，返回所有视频文件的完整路径
 func (s *Scanner) scanDirRecursive(fs FileSystem, dir string) []string {
 	entries, err := fs.ListDetailed(dir)
 	if err != nil {
@@ -73,12 +75,11 @@ func (s *Scanner) Scan(pathID uint) error {
 		return fmt.Errorf("创建文件系统失败: %w", err)
 	}
 
-	// ===== 递归扫描所有视频 =====
 	videos := s.scanDirRecursive(fs, path.SourcePath)
 	helpers.AppLogger.Infof("[AV扫描] 目录 %s 递归找到 %d 个视频文件", path.SourcePath, len(videos))
 
 	if len(videos) == 0 {
-		s.DB.Model(&path).Update("last_scan_at", now())
+		s.DB.Model(&path).Update("last_scan_at", time.Now())
 		return nil
 	}
 
@@ -88,6 +89,9 @@ func (s *Scanner) Scan(pathID uint) error {
 		cfg = &def
 	}
 
+	// ===== 按番号分组（多碟处理）=====
+	groups := make(map[string][]string)
+	var order []string
 	for _, fullPath := range videos {
 		name := filepath.Base(fullPath)
 		code := ExtractCode(name)
@@ -95,16 +99,51 @@ func (s *Scanner) Scan(pathID uint) error {
 			s.recordTask("", fullPath, "failed", "无法识别番号", "")
 			continue
 		}
-		helpers.AppLogger.Infof("[AV扫描] 处理文件 %s → 番号 %s", fullPath, code)
+		if _, exists := groups[code]; !exists {
+			order = append(order, code)
+		}
+		groups[code] = append(groups[code], fullPath)
+	}
 
-		result, err := s.Svc.Scrape(code)
-		if err != nil {
-			s.recordTask(code, fullPath, "failed", err.Error(), "")
-			continue
+	// ===== 逐组处理 =====
+	for _, code := range order {
+		files := groups[code]
+		primaryFile := files[0]
+		helpers.AppLogger.Infof("[AV扫描] 番号 %s 共 %d 个文件，主文件: %s", code, len(files), filepath.Base(primaryFile))
+
+		// 1. 探测主文件（分辨率 + oshash）
+		var resolution string
+		var isHDR bool
+		var oshash string
+		if url, err := fs.GetURL(primaryFile); err == nil && url != "" {
+			if pr, err := probeVideo(url); err == nil {
+				resolution = pr.Resolution
+				isHDR = pr.IsHDR
+				oshash = pr.Oshash
+			} else {
+				helpers.AppLogger.Warnf("[AV探测] %s 失败: %v", code, err)
+			}
 		}
 
-		s.detectLocalMeta(fs, &path, result, fullPath)
+		// 2. 刮削（传入 oshash）
+		result, err := s.Svc.Scrape(code, oshash)
+		if err != nil {
+			s.recordTask(code, primaryFile, "failed", err.Error(), "")
+			continue
+		}
+		result.Resolution = resolution
+		result.IsHDR = isHDR
+		result.Oshash = oshash
 
+		// 3. 本地检测
+		result.IsUncensored = detectUncensored(code)
+		result.HasChineseSub = detectChineseSub(fs, primaryFile)
+		result.ExtraTags = buildExtraTags(result, cfg)
+		if len(result.ExtraTags) > 0 {
+			helpers.AppLogger.Infof("[AV探测] %s 附加标签: %v", code, result.ExtraTags)
+		}
+
+		// 4. 目标目录
 		media := MediaFromResult(result)
 		subPath := renderFolderTemplate(path.NameTemplate, media)
 		subPath = strings.Trim(subPath, "/")
@@ -118,63 +157,60 @@ func (s *Scanner) Scan(pathID uint) error {
 		helpers.AppLogger.Infof("[AV整理] 目标目录: %s (模板=%s)", targetDir, path.NameTemplate)
 
 		if err := fs.MkdirAll(targetDir); err != nil {
-			s.recordTask(code, fullPath, "failed", "创建目标目录失败: "+err.Error(), result.Source)
+			s.recordTask(code, primaryFile, "failed", "创建目标目录失败: "+err.Error(), result.Source)
 			continue
 		}
 
+		// 5. 写元数据（一份 NFO + 一份图片）
 		if err := s.writeMetadataToTarget(fs, targetDir, result, cfg); err != nil {
-			s.recordTask(code, fullPath, "failed", err.Error(), result.Source)
+			s.recordTask(code, primaryFile, "failed", err.Error(), result.Source)
 			continue
 		}
 
+		// 6. 移动所有 CD 文件（保留 cdN 后缀，分辨率后缀插在中间）
 		if path.Mode == "scrape_and_rename" || path.Mode == "rename_only" {
-			ext := strings.ToLower(filepath.Ext(name))
 			suffix := ""
-			switch result.Resolution {
-			case "4K":
-				suffix = "-4k"
+			switch resolution {
 			case "8K":
 				suffix = "-8k"
+			case "7K":
+				suffix = "-7k"
+			case "6K":
+				suffix = "-6k"
+			case "5K":
+				suffix = "-5k"
+			case "4K":
+				suffix = "-4k"
 			}
-			newName := result.Code + suffix + ext
-			if err := s.moveVideo(fs, fullPath, targetDir, newName, path.MoveMethod); err != nil {
-				s.recordTask(code, fullPath, "failed", "移动视频失败: "+err.Error(), result.Source)
-				continue
+			for _, f := range files {
+				originalName := filepath.Base(f)
+				ext := filepath.Ext(originalName)
+				baseName := strings.TrimSuffix(originalName, ext)
+
+				// 提取 cdN / partN 后缀，插在分辨率后缀之后
+				cdSuffix := ""
+				if m := cdPartRegex.FindString(baseName); m != "" {
+					cdSuffix = m
+					baseName = strings.Replace(baseName, m, "", 1)
+				}
+				newName := baseName + suffix + cdSuffix + ext
+
+				if err := s.moveVideo(fs, f, targetDir, newName, path.MoveMethod); err != nil {
+					helpers.AppLogger.Warnf("[AV整理] 移动 %s 失败: %v", originalName, err)
+				}
 			}
 		}
 
-		s.recordTask(code, fullPath, "done", "", result.Source)
+		// 7. 写 oshash 文件（主文件一份）
+		if oshash != "" {
+			_ = fs.Write(fmt.Sprintf("%s/%s.oshash", targetDir, code), []byte(oshash))
+		}
+
+		s.recordTask(code, primaryFile, "done", fmt.Sprintf("共 %d 个文件", len(files)), result.Source)
 	}
 
-	s.DB.Model(&path).Update("last_scan_at", now())
+	s.DB.Model(&path).Update("last_scan_at", time.Now())
 	return nil
-}
-
-func (s *Scanner) detectLocalMeta(fs FileSystem, path *models.AVPath, r *ScrapeResult, videoPath string) {
-	cfg, err := LoadConfig(s.DB)
-	if err != nil || cfg == nil {
-		def := defaultConfig
-		cfg = &def
-	}
-
-	r.IsUncensored = detectUncensored(r.Code)
-	r.HasChineseSub = detectChineseSub(fs, videoPath)
-
-	if cfg.ExtraTagResolution || cfg.Watermark4K || cfg.Watermark8K {
-		if url, err := fs.GetURL(videoPath); err == nil && url != "" {
-			if pr, err := probeVideo(url); err == nil {
-				r.Resolution = pr.Resolution
-				r.IsHDR = pr.IsHDR
-			} else {
-				helpers.AppLogger.Warnf("[AV探测] %s ffprobe 失败: %v", r.Code, err)
-			}
-		}
-	}
-
-	r.ExtraTags = buildExtraTags(r, cfg)
-	if len(r.ExtraTags) > 0 {
-		helpers.AppLogger.Infof("[AV探测] %s 附加标签: %v", r.Code, r.ExtraTags)
-	}
 }
 
 func (s *Scanner) writeMetadataToTarget(fs FileSystem, targetDir string, r *ScrapeResult, cfg *Config) error {
@@ -312,7 +348,6 @@ func renderFolderTemplate(tpl string, m *models.AVMedia) string {
 	if tpl == "" {
 		tpl = "{code}"
 	}
-
 	actorName := ""
 	if m.Actors != "" {
 		var list []Actor
@@ -333,12 +368,10 @@ func renderFolderTemplate(tpl string, m *models.AVMedia) string {
 			}
 		}
 	}
-
 	year := ""
 	if len(m.ReleaseDate) >= 4 {
 		year = m.ReleaseDate[:4]
 	}
-
 	r := tpl
 	r = strings.ReplaceAll(r, "{actors}", sanitizePathSegment(actorName))
 	r = strings.ReplaceAll(r, "{actor}", sanitizePathSegment(actorName))
