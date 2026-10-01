@@ -9,7 +9,8 @@ import (
 )
 
 // GenerateNFO 根据 ScrapeResult 生成 NFO 文本
-// Genres 和 ExtraTags 会合并去重后一起输出到 <genre> / <tag>
+// - Genres + ExtraTags 合并去重后一起输出到 <genre> / <tag>
+// - 多演员（>=2）自动加 <set><name>共演</name></set> 合集
 func GenerateNFO(r *ScrapeResult) string {
 	if r == nil {
 		return ""
@@ -50,6 +51,15 @@ func GenerateNFO(r *ScrapeResult) string {
 	if r.Series != "" {
 		sb.WriteString(fmt.Sprintf("  <series><![CDATA[%s]]></series>\n", r.Series))
 	}
+
+	// ===== 多演员（>=2）→ 加 <set> 合集 "共演" =====
+	if len(r.Actors) >= 2 {
+		sb.WriteString("  <set>\n")
+		sb.WriteString("    <name>共演</name>\n")
+		sb.WriteString("  </set>\n")
+	}
+	// ============================================
+
 	if r.Rating > 0 {
 		sb.WriteString(fmt.Sprintf("  <rating>%.2f</rating>\n", r.Rating))
 	}
@@ -64,7 +74,7 @@ func GenerateNFO(r *ScrapeResult) string {
 		sb.WriteString(fmt.Sprintf("  <trailer>%s</trailer>\n", r.Trailer))
 	}
 
-	// ===== 合并 Genres 和 ExtraTags，去重后输出 =====
+	// ===== Genres + ExtraTags 合并去重 =====
 	seen := map[string]bool{}
 	writeGenre := func(g string) {
 		if g == "" || seen[g] {
@@ -80,7 +90,7 @@ func GenerateNFO(r *ScrapeResult) string {
 	for _, g := range r.ExtraTags {
 		writeGenre(g)
 	}
-	// ============================================
+	// =====================================
 
 	for _, a := range r.Actors {
 		sb.WriteString("  <actor>\n")
