@@ -78,7 +78,7 @@ func probeVideo(videoURL string) (*probeResult, error) {
 	}
 
 	args := []string{
-		"-v", "quiet",
+		"-v", "error",
 		"-print_format", "json",
 		"-show_streams",
 		"-show_format",
