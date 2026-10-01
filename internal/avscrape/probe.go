@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -12,7 +13,6 @@ import (
 	"Q115-STRM/internal/helpers"
 )
 
-// 无码番号前缀
 var uncensoredPrefixes = []string{
 	"Carib", "carib", "1Pondo", "1pondo", "Heyzo", "HEYZO",
 	"Tokyo-Hot", "tokyo-hot", "TokyoHot", "10musume", "10Musume",
@@ -21,7 +21,6 @@ var uncensoredPrefixes = []string{
 	"DSAM", "Heaven", "heaven", "Gachinco", "gachinco",
 }
 
-// detectUncensored 按番号前缀判断是否无码
 func detectUncensored(code string) bool {
 	for _, p := range uncensoredPrefixes {
 		if strings.HasPrefix(strings.ToLower(code), strings.ToLower(p)) {
@@ -31,7 +30,6 @@ func detectUncensored(code string) bool {
 	return false
 }
 
-// detectChineseSub 从文件名 + 外挂字幕判断是否有中文
 func detectChineseSub(fs FileSystem, videoPath string) bool {
 	base := filepath.Base(videoPath)
 	lower := strings.ToLower(base)
@@ -64,26 +62,43 @@ func detectChineseSub(fs FileSystem, videoPath string) bool {
 	return false
 }
 
-// probeResult ffprobe 结果
 type probeResult struct {
 	Resolution string
 	IsHDR      bool
 }
 
+// wrapURL 如果 URL 是 115 CDN，改走本地 /proxy-115 反代，绕过 UA 检查
+// 跟原版刮削模块的做法一致
+func wrapURL(videoURL string) string {
+	if videoURL == "" {
+		return ""
+	}
+	// 115 CDN 域名特征
+	if strings.Contains(videoURL, "115cdn.net") ||
+		strings.Contains(videoURL, "115.com") ||
+		strings.Contains(videoURL, "anxia.com") {
+		wrapped := fmt.Sprintf("http://127.0.0.1:12333/proxy-115?url=%s", url.QueryEscape(videoURL))
+		helpers.AppLogger.Infof("[AV探测] 115 直链走本地反代")
+		return wrapped
+	}
+	return videoURL
+}
+
 // probeVideo 通过 URL 用 ffprobe 读取视频信息
-// 严格串行、限制读取范围，避免触发 CDN 风控
+// 参考原版：115 直链走本地 /proxy-115 反代，反代服务用正确 UA 请求 115 CDN
 func probeVideo(videoURL string) (*probeResult, error) {
 	if videoURL == "" {
 		return nil, fmt.Errorf("空 URL")
 	}
+
+	// 115 直链包装成本地反代地址
+	videoURL = wrapURL(videoURL)
 
 	args := []string{
 		"-v", "error",
 		"-print_format", "json",
 		"-show_streams",
 		"-show_format",
-		"-select_streams", "v:0",
-		"-read_intervals", "%+#2M",
 		"-analyzeduration", "5000000",
 		"-probesize", "2000000",
 		videoURL,
@@ -104,7 +119,7 @@ func probeVideo(videoURL string) (*probeResult, error) {
 		if err != nil {
 			return nil, fmt.Errorf("ffprobe 失败: %v, %s", err, stderr.String())
 		}
-	case <-time.After(30 * time.Second):
+	case <-time.After(60 * time.Second):
 		_ = cmd.Process.Kill()
 		return nil, fmt.Errorf("ffprobe 超时")
 	}
@@ -134,7 +149,6 @@ func probeVideo(videoURL string) (*probeResult, error) {
 	return pr, nil
 }
 
-// classifyResolution 宽高 → 分辨率标签
 func classifyResolution(w, h int) string {
 	if h == 0 {
 		return ""
@@ -157,7 +171,6 @@ func classifyResolution(w, h int) string {
 	}
 }
 
-// isHDRPixelFormat 判断是否 HDR
 func isHDRPixelFormat(pixFmt, colorTrc string) bool {
 	if strings.Contains(pixFmt, "10le") || strings.Contains(pixFmt, "12le") {
 		return true
@@ -169,7 +182,6 @@ func isHDRPixelFormat(pixFmt, colorTrc string) bool {
 	return false
 }
 
-// buildExtraTags 根据本地检测结果构建附加 tag
 func buildExtraTags(r *ScrapeResult, cfg *Config) []string {
 	var tags []string
 
