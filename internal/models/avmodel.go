@@ -44,6 +44,7 @@ type AVMedia struct {
 	NFOContent    string    `gorm:"type:text" json:"nfo_content"`
 	Translated    bool      `json:"translated"`
 	Source        string    `gorm:"size:32" json:"source"`
+	Oshash        string    `gorm:"index;size:64" json:"oshash"`
 	CreatedAt     time.Time `json:"created_at"`
 	UpdatedAt     time.Time `json:"updated_at"`
 }
