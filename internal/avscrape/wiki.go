@@ -108,9 +108,7 @@ func (w *WikiClient) GetChineseName(japaneseName string) (string, error) {
 // TranslateActorNames 批量查询演员中文名
 func (w *WikiClient) TranslateActorNames(actors []Actor) []Actor {
 	for i := range actors {
-		if isChineseName(actors[i].Name) {
-			continue
-		}
+		// 无条件走 wiki：日文名会查到中文名，已是中文的名字查不到会保持原样
 		if zh, err := w.GetChineseName(actors[i].Name); err == nil && zh != "" {
 			actors[i].Name = zh
 		}
