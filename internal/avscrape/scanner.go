@@ -38,6 +38,27 @@ func NewScanner(db *gorm.DB) *Scanner {
 	return &Scanner{DB: db, Svc: NewService(db)}
 }
 
+// scanDirRecursive 递归扫描目录，返回所有视频文件的完整路径
+func (s *Scanner) scanDirRecursive(fs FileSystem, dir string) []string {
+	entries, err := fs.ListDetailed(dir)
+	if err != nil {
+		helpers.AppLogger.Warnf("[AV扫描] 列出目录失败 %s: %v", dir, err)
+		return nil
+	}
+	var videos []string
+	for _, e := range entries {
+		if e.IsDir {
+			sub := s.scanDirRecursive(fs, e.Path)
+			videos = append(videos, sub...)
+			continue
+		}
+		if videoExts[strings.ToLower(filepath.Ext(e.Name))] {
+			videos = append(videos, e.Path)
+		}
+	}
+	return videos
+}
+
 func (s *Scanner) Scan(pathID uint) error {
 	var path models.AVPath
 	if err := s.DB.First(&path, pathID).Error; err != nil {
@@ -52,19 +73,23 @@ func (s *Scanner) Scan(pathID uint) error {
 		return fmt.Errorf("创建文件系统失败: %w", err)
 	}
 
-	files, err := fs.List(path.SourcePath)
-	if err != nil {
-		return fmt.Errorf("列出目录失败: %w", err)
+	// ===== 递归扫描所有视频 =====
+	videos := s.scanDirRecursive(fs, path.SourcePath)
+	helpers.AppLogger.Infof("[AV扫描] 目录 %s 递归找到 %d 个视频文件", path.SourcePath, len(videos))
+
+	if len(videos) == 0 {
+		s.DB.Model(&path).Update("last_scan_at", now())
+		return nil
 	}
 
-	helpers.AppLogger.Infof("[AV扫描] 目录 %s 共找到 %d 个文件", path.SourcePath, len(files))
+	cfg, cfgErr := LoadConfig(s.DB)
+	if cfgErr != nil || cfg == nil {
+		def := defaultConfig
+		cfg = &def
+	}
 
-	for _, name := range files {
-		ext := strings.ToLower(filepath.Ext(name))
-		if !videoExts[ext] {
-			continue
-		}
-		fullPath := path.SourcePath + "/" + name
+	for _, fullPath := range videos {
+		name := filepath.Base(fullPath)
 		code := ExtractCode(name)
 		if code == "" {
 			s.recordTask("", fullPath, "failed", "无法识别番号", "")
@@ -97,18 +122,13 @@ func (s *Scanner) Scan(pathID uint) error {
 			continue
 		}
 
-		cfg, cfgErr := LoadConfig(s.DB)
-		if cfgErr != nil || cfg == nil {
-			def := defaultConfig
-			cfg = &def
-		}
-
 		if err := s.writeMetadataToTarget(fs, targetDir, result, cfg); err != nil {
 			s.recordTask(code, fullPath, "failed", err.Error(), result.Source)
 			continue
 		}
 
 		if path.Mode == "scrape_and_rename" || path.Mode == "rename_only" {
+			ext := strings.ToLower(filepath.Ext(name))
 			suffix := ""
 			switch result.Resolution {
 			case "4K":
@@ -288,11 +308,6 @@ func (s *Scanner) moveVideo(fs FileSystem, srcPath, targetDir, newName, moveMeth
 	}
 }
 
-// renderFolderTemplate 渲染文件夹模板
-// 多演员规则：
-//   1 位   → 用演员名
-//   2-3 位 → 用逗号拼接
-//   > 3 位 → 用"多人作品"
 func renderFolderTemplate(tpl string, m *models.AVMedia) string {
 	if tpl == "" {
 		tpl = "{code}"
