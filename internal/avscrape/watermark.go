@@ -11,16 +11,14 @@ import (
 	"Q115-STRM/internal/helpers"
 )
 
-//go:embed 4k.png 8k.png 字幕.png 无码.png 流出.png 破解.png
+//go:embed 4k.png 5k.png 6k.png 7k.png 8k.png 字幕.png 无码.png 流出.png 破解.png
 var watermarkFS embed.FS
 
-// WatermarkItem 单个水印项
 type WatermarkItem struct {
-	PngName string // PNG 文件名（相对于 internal/avscrape/ 目录）
-	Label   string // 日志显示用
+	PngName string
+	Label   string
 }
 
-// buildWatermarks 根据配置 + tag 生成水印列表
 func buildWatermarks(r *ScrapeResult, cfg *Config) []WatermarkItem {
 	var items []WatermarkItem
 
@@ -28,12 +26,19 @@ func buildWatermarks(r *ScrapeResult, cfg *Config) []WatermarkItem {
 	allTags = append(allTags, r.ExtraTags...)
 	joined := toLower(strings_Join(allTags, ","))
 
-	// 8K 优先于 4K
+	// 分辨率水印：从高到低，只打一个
 	if cfg.Watermark8K && (contains(joined, "8k") || r.Resolution == "8K") {
 		items = append(items, WatermarkItem{PngName: "8k.png", Label: "8K"})
+	} else if cfg.Watermark7K && (contains(joined, "7k") || r.Resolution == "7K") {
+		items = append(items, WatermarkItem{PngName: "7k.png", Label: "7K"})
+	} else if cfg.Watermark6K && (contains(joined, "6k") || r.Resolution == "6K") {
+		items = append(items, WatermarkItem{PngName: "6k.png", Label: "6K"})
+	} else if cfg.Watermark5K && (contains(joined, "5k") || r.Resolution == "5K") {
+		items = append(items, WatermarkItem{PngName: "5k.png", Label: "5K"})
 	} else if cfg.Watermark4K && (contains(joined, "4k") || r.Resolution == "4K") {
 		items = append(items, WatermarkItem{PngName: "4k.png", Label: "4K"})
 	}
+
 	if cfg.WatermarkSubtitle && (r.HasChineseSub || contains(joined, "字幕") || contains(joined, "中字")) {
 		items = append(items, WatermarkItem{PngName: "字幕.png", Label: "字幕"})
 	}
@@ -49,7 +54,6 @@ func buildWatermarks(r *ScrapeResult, cfg *Config) []WatermarkItem {
 	return items
 }
 
-// applyWatermark 把 PNG 水印按顺序叠加到图片左上角
 func applyWatermark(imgData []byte, items []WatermarkItem) ([]byte, error) {
 	if len(items) == 0 {
 		return imgData, nil
@@ -83,7 +87,6 @@ func applyWatermark(imgData []byte, items []WatermarkItem) ([]byte, error) {
 			continue
 		}
 
-		// 水印宽度 = 底图宽度的 8%
 		wmW := wmImg.Bounds().Dx()
 		wmH := wmImg.Bounds().Dy()
 		targetW := w * 8 / 100
@@ -97,7 +100,6 @@ func applyWatermark(imgData []byte, items []WatermarkItem) ([]byte, error) {
 		draw.Draw(dst, image.Rect(curX, curY, curX+targetW, curY+targetH), scaled, image.Point{}, draw.Over)
 
 		curX += targetW + padX/2
-		// 一行放不下就换行
 		if curX+targetW > w-padX {
 			curX = padX
 			curY += targetH + padY/2
@@ -111,7 +113,6 @@ func applyWatermark(imgData []byte, items []WatermarkItem) ([]byte, error) {
 	return out.Bytes(), nil
 }
 
-// resizeImage 简单的最近邻缩放
 func resizeImage(src image.Image, newW, newH int) image.Image {
 	dst := image.NewRGBA(image.Rect(0, 0, newW, newH))
 	srcBounds := src.Bounds()
@@ -127,7 +128,6 @@ func resizeImage(src image.Image, newW, newH int) image.Image {
 	return dst
 }
 
-// 小工具
 func strings_Join(arr []string, sep string) string {
 	if len(arr) == 0 {
 		return ""
