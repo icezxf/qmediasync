@@ -65,7 +65,7 @@ func (s *Scanner) Scan(pathID uint) error {
 		if hasExisting {
 			result = mediaToScrapeResult(&existing)
 		} else {
-			r, err := s.Svc.Scrape(code)
+			r, err := s.Svc.Scrape(code, "")
 			if err != nil {
 				s.recordTask(code, fullPath, "failed", err.Error(), "")
 				continue
@@ -74,7 +74,6 @@ func (s *Scanner) Scan(pathID uint) error {
 		}
 
 		if path.Mode == "scrape_only" {
-			// 仅刮削：元数据写到源目录（走上传队列）
 			tmpDir := filepath.Dir(fullPath)
 			baseName := strings.TrimSuffix(name, filepath.Ext(name))
 			files, err := s.prepareMetaFiles(baseName, result)
@@ -100,17 +99,14 @@ func (s *Scanner) Scan(pathID uint) error {
 		s.recordTask(code, fullPath, "done", msg, result.Source)
 	}
 
-	// ===== 所有视频处理完后，统一清理源目录残留 =====
 	if path.Mode != "scrape_only" {
 		s.cleanupSourceDir(fs, path.SourcePath)
 	}
-	// ================================================
 
 	s.DB.Model(&path).Update("last_scan_at", now())
 	return nil
 }
 
-// organize 视频移动 + 元数据入上传队列
 func (s *Scanner) organize(fs FileSystem, path *models.AVPath, media *models.AVMedia, videoPath, videoName string, r *ScrapeResult) error {
 	relDir := renderTemplate(path.NameTemplate, media)
 	if relDir == "" {
@@ -125,7 +121,6 @@ func (s *Scanner) organize(fs FileSystem, path *models.AVPath, media *models.AVM
 	newName := media.Code + ext
 	newVideoPath := targetDir + "/" + newName
 
-	// 1. 移动/复制视频
 	if !fs.Exists(newVideoPath) {
 		switch path.MoveMethod {
 		case "copy":
@@ -145,7 +140,6 @@ func (s *Scanner) organize(fs FileSystem, path *models.AVPath, media *models.AVM
 		}
 	}
 
-	// 2. 元数据先写本地临时目录，再入上传队列
 	if r != nil {
 		files, err := s.prepareMetaFiles(media.Code, r)
 		if err != nil {
@@ -156,12 +150,9 @@ func (s *Scanner) organize(fs FileSystem, path *models.AVPath, media *models.AVM
 		}
 	}
 
-	// 清理延后到 Scan 末尾统一做，这里不再调用
 	return nil
 }
 
-// prepareMetaFiles 生成元数据到本地临时目录，返回待入队文件列表
-// 剧照不限制数量，全部下载（走上传队列，不占同步 API）
 func (s *Scanner) prepareMetaFiles(baseName string, r *ScrapeResult) ([]LocalFile, error) {
 	if r == nil {
 		return nil, nil
@@ -175,14 +166,12 @@ func (s *Scanner) prepareMetaFiles(baseName string, r *ScrapeResult) ([]LocalFil
 
 	files := []LocalFile{}
 
-	// NFO
 	nfoPath := filepath.Join(tmpDir, baseName+".nfo")
 	if err := os.WriteFile(nfoPath, []byte(GenerateNFO(r)), 0644); err != nil {
 		return nil, fmt.Errorf("写 NFO 失败: %w", err)
 	}
 	files = append(files, LocalFile{LocalPath: nfoPath, RemoteName: baseName + ".nfo"})
 
-	// 海报
 	if r.Poster != "" {
 		p := filepath.Join(tmpDir, "poster.jpg")
 		if err := helpers.DownloadFile(r.Poster, p, ""); err == nil {
@@ -191,7 +180,6 @@ func (s *Scanner) prepareMetaFiles(baseName string, r *ScrapeResult) ([]LocalFil
 			helpers.AppLogger.Warnf("[AV元数据] 下载 poster 失败: %v", err)
 		}
 	}
-	// 背景图
 	if r.Fanart != "" {
 		p := filepath.Join(tmpDir, "fanart.jpg")
 		if err := helpers.DownloadFile(r.Fanart, p, ""); err == nil {
@@ -200,7 +188,6 @@ func (s *Scanner) prepareMetaFiles(baseName string, r *ScrapeResult) ([]LocalFil
 			helpers.AppLogger.Warnf("[AV元数据] 下载 fanart 失败: %v", err)
 		}
 	}
-	// 剧照（不限制数量）
 	for i, url := range r.PreviewImages {
 		remoteName := fmt.Sprintf("extrafanart/scene-%02d.jpg", i+1)
 		localPath := filepath.Join(tmpDir, fmt.Sprintf("scene-%02d.jpg", i+1))
@@ -210,7 +197,6 @@ func (s *Scanner) prepareMetaFiles(baseName string, r *ScrapeResult) ([]LocalFil
 			helpers.AppLogger.Warnf("[AV元数据] 下载剧照 %d 失败: %v", i+1, err)
 		}
 	}
-	// 预告片
 	if r.Trailer != "" {
 		p := filepath.Join(tmpDir, "trailer.strm")
 		if err := os.WriteFile(p, []byte(r.Trailer), 0644); err == nil {
