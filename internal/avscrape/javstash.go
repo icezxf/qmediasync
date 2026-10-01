@@ -120,8 +120,7 @@ func (j *JavStashClient) Search(code string) ([]*ScrapeResult, error) {
 			r.Fanart = item.Images[0].URL
 		}
 		for _, p := range item.Performers {
-			// 保留主名字，不覆盖。aliases 全部存进 Actor.Aliases
-			// 中文名由后续维基百科或 aliases 交叉匹配处理
+			// 保留主名字，aliases 全部存进 Actor.Aliases 供后续归一化和交叉匹配
 			a := Actor{
 				Name:    p.Performer.Name,
 				Aliases: p.Performer.Aliases,
