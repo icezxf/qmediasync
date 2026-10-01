@@ -1,7 +1,6 @@
 package avscrape
 
 import (
-	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
