@@ -34,7 +34,7 @@ func dmmPosterURL(code string) string {
 		return ""
 	}
 	filename := strings.ToLower(letters) + fmt.Sprintf("%05d", num)
-	return "https://pics.dmm.co.jp/digital/video/" + filename + "/" + filename + "pl.jpg"
+	return "https://pics.dmm.co.jp/digital/video/" + filename + "/" + filename + "ps.jpg"
 }
 
 // downloadDMMImage 下载 DMM 封面（带 Referer 防盗链）
