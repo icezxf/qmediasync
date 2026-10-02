@@ -6,7 +6,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"regexp"
 	"strings"
 	"time"
 )
@@ -24,12 +23,11 @@ func (m *MetaTubeClient) Name() string { return "metatube" }
 
 type metaTubeSearchResp struct {
 	Data []struct {
-		ID          string `json:"id"`
-		Number      string `json:"number"`
+		ID          string `json:"id"`       // 用于 Detail 查询，如 midv00192
+		Number      string `json:"number"`   // 展示用，如 MIDV-192
 		Title       string `json:"title"`
 		Provider    string `json:"provider"`
 		CoverURL    string `json:"cover_url"`
-		ThumbURL    string `json:"thumb_url"`
 		ReleaseDate string `json:"release_date"`
 	} `json:"data"`
 }
@@ -43,9 +41,8 @@ type metaTubeDetailResp struct {
 		Provider      string   `json:"provider"`
 		Director      string   `json:"director"`
 		Actors        []string `json:"actors"`
-		ThumbURL      string   `json:"thumb_url"`
 		CoverURL      string   `json:"cover_url"`
-		BigThumbURL   string   `json:"big_thumb_url"`
+		BackdropURL   string   `json:"backdrop_url"`
 		PreviewImages []string `json:"preview_images"`
 		PreviewVideo  string   `json:"preview_video_url"`
 		Maker         string   `json:"maker"`
@@ -75,17 +72,14 @@ func (m *MetaTubeClient) Search(code string) ([]*ScrapeResult, error) {
 
 	var out []*ScrapeResult
 	for _, item := range sr.Data {
-		// poster 优先 thumb_url（竖版），兜底 cover_url
-		poster := item.ThumbURL
-		if poster == "" {
-			poster = item.CoverURL
-		}
 		out = append(out, &ScrapeResult{
 			Code:        item.Number,
 			Title:       item.Title,
-			Poster:      poster,
+			Poster:      item.CoverURL,
 			ReleaseDate: item.ReleaseDate,
 			Source:      "metatube:" + item.Provider,
+			// ===== 关键：用 Search 返回的 id（midv00192），不是 number（MIDV-192）
+			ProviderID:  item.Provider + "/" + item.ID,
 			HasChinese:  !isJapanese(item.Title) && containsChinese(item.Title),
 		})
 	}
@@ -106,12 +100,6 @@ func (m *MetaTubeClient) Detail(code string, providerID string) (*ScrapeResult, 
 		return nil, fmt.Errorf("metatube detail decode: %w", err)
 	}
 
-	// poster 优先 thumb_url（竖版 ps.jpg），兜底 cover_url（横版 pl.jpg）
-	poster := dr.Data.ThumbURL
-	if poster == "" {
-		poster = dr.Data.CoverURL
-	}
-
 	r := &ScrapeResult{
 		Code:          dr.Data.Number,
 		Title:         dr.Data.Title,
@@ -124,34 +112,20 @@ func (m *MetaTubeClient) Detail(code string, providerID string) (*ScrapeResult, 
 		Label:         dr.Data.Label,
 		Series:        dr.Data.Series,
 		Genres:        dr.Data.Genres,
-		Poster:        poster,
-		Fanart:        dr.Data.BigThumbURL,
+		Poster:        dr.Data.CoverURL,
+		Fanart:        dr.Data.BackdropURL,
 		PreviewImages: dr.Data.PreviewImages,
 		Trailer:       dr.Data.PreviewVideo,
 		Rating:        dr.Data.Score,
 		Source:        "metatube:" + dr.Data.Provider,
+		ProviderID:    providerID,
 	}
 	if dr.Data.Homepage != "" {
 		r.Urls = append(r.Urls, dr.Data.Homepage)
 	}
 	for _, name := range dr.Data.Actors {
-		cleanName := cleanActorName(name)
-		if cleanName == "" {
-			continue
-		}
-		r.Actors = append(r.Actors, Actor{Name: cleanName})
+		r.Actors = append(r.Actors, Actor{Name: name})
 	}
 	r.HasChinese = !isJapanese(r.Title) && containsChinese(r.Title)
 	return r, nil
-}
-
-// actorNameBracketRe 去掉演员名里的中文/英文括号补充
-// 例："河北彩花（河北彩咖）" → "河北彩花"
-var actorNameBracketRe = regexp.MustCompile(`[（(][^）)]*[）)]`)
-
-// cleanActorName 清理演员名
-func cleanActorName(name string) string {
-	name = strings.TrimSpace(name)
-	name = actorNameBracketRe.ReplaceAllString(name, "")
-	return strings.TrimSpace(name)
 }
