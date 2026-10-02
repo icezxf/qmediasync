@@ -345,6 +345,14 @@ func (s *Scanner) organize(fs FileSystem, path *models.AVPath, media *models.AVM
 //   - fanart（横版）：ImageCandidates 横图
 //   - thumb = fanart 副本
 // ============================================================
+// ============================================================
+// prepareMetaFiles 生成元数据
+// 图片策略：
+//   - poster（竖版）：ImageCandidates 竖图 > DMM（仅竖版 ps.jpg）> fanart 裁剪
+//   - fanart（横版）：ImageCandidates 横图 > 强制裁 16:9
+//   - thumb = fanart 副本
+// 顺序：NFO 放最后（此时 r.Poster/r.Fanart 已经设成本地文件名）
+// ============================================================
 func (s *Scanner) prepareMetaFiles(baseName string, r *ScrapeResult, cfg *Config) ([]LocalFile, error) {
 	if r == nil {
 		return nil, nil
@@ -358,14 +366,7 @@ func (s *Scanner) prepareMetaFiles(baseName string, r *ScrapeResult, cfg *Config
 
 	files := []LocalFile{}
 
-	// 1. NFO
-	nfoPath := filepath.Join(tmpDir, baseName+".nfo")
-	if err := os.WriteFile(nfoPath, []byte(GenerateNFO(r)), 0644); err != nil {
-		return nil, fmt.Errorf("写 NFO 失败: %w", err)
-	}
-	files = append(files, LocalFile{LocalPath: nfoPath, RemoteName: baseName + ".nfo"})
-
-	// 2. 水印
+	// 1. 水印
 	watermarks := buildWatermarks(r, cfg)
 	if len(watermarks) > 0 {
 		names := make([]string, 0, len(watermarks))
@@ -375,10 +376,9 @@ func (s *Scanner) prepareMetaFiles(baseName string, r *ScrapeResult, cfg *Config
 		helpers.AppLogger.Infof("[AV水印] %s 准备打水印: %v", r.Code, names)
 	}
 
-	// 3. 从 ImageCandidates 挑竖版 poster 和横版 fanart
+	// 2. 从 ImageCandidates 挑竖版 poster 和横版 fanart
 	var posterData, fanartData []byte
 
-	// 3.1 保险：ImageCandidates 为空时用 r.Poster/r.Fanart 兜底
 	candidates := r.ImageCandidates
 	if len(candidates) == 0 {
 		if r.Poster != "" {
@@ -405,12 +405,10 @@ func (s *Scanner) prepareMetaFiles(baseName string, r *ScrapeResult, cfg *Config
 		helpers.AppLogger.Infof("[AV元数据]   [%d] %dx%d (%s)", i, imgCfg.Width, imgCfg.Height, redactURL(url))
 		if posterData == nil && imgCfg.Height > imgCfg.Width {
 			posterData = data
-			r.Poster = url
 			helpers.AppLogger.Infof("[AV元数据]   → 作为 poster")
 		}
 		if fanartData == nil && imgCfg.Height < imgCfg.Width {
 			fanartData = data
-			r.Fanart = url
 			helpers.AppLogger.Infof("[AV元数据]   → 作为 fanart")
 		}
 		if posterData != nil && fanartData != nil {
@@ -426,14 +424,13 @@ func (s *Scanner) prepareMetaFiles(baseName string, r *ScrapeResult, cfg *Config
 		helpers.AppLogger.Warnf("[AV元数据] ImageCandidates 里没有横版图，fanart 将缺失")
 	}
 
-	// 4. poster 兜底 1：DMM（仅接受竖版 ps.jpg，横版直接跳过留给 fanart 裁剪兜底）
+	// 3. poster 兜底 1：DMM（仅接受竖版）
 	if posterData == nil {
 		if dmmURL := dmmPosterURL(r.Code); dmmURL != "" {
 			if data, err := downloadDMMImage(dmmURL); err == nil {
 				if imgCfg, _, decErr := image.DecodeConfig(bytes.NewReader(data)); decErr == nil {
 					if imgCfg.Height > imgCfg.Width {
 						posterData = data
-						r.Poster = dmmURL
 						helpers.AppLogger.Infof("[AV元数据] poster 使用 DMM（竖版 %dx%d）", imgCfg.Width, imgCfg.Height)
 					} else {
 						helpers.AppLogger.Infof("[AV元数据] DMM 图是横版 %dx%d，跳过，留给 fanart 裁剪兜底", imgCfg.Width, imgCfg.Height)
@@ -445,18 +442,17 @@ func (s *Scanner) prepareMetaFiles(baseName string, r *ScrapeResult, cfg *Config
 		}
 	}
 
-	// 5. poster 兜底 2：从 fanart 裁剪
+	// 4. poster 兜底 2：从 fanart 裁剪
 	if posterData == nil && fanartData != nil {
 		if cropped, ok := cropPosterFromFanart(fanartData); ok {
 			posterData = cropped
-			r.Poster = "poster.jpg"
 			helpers.AppLogger.Infof("[AV元数据] poster 从 fanart 裁剪")
 		} else {
 			helpers.AppLogger.Warnf("[AV元数据] fanart 裁剪 poster 失败")
 		}
 	}
 
-	// 6. 打水印
+	// 5. 打水印
 	if posterData != nil && len(watermarks) > 0 {
 		if wm, err := applyWatermark(posterData, watermarks); err == nil {
 			posterData = wm
@@ -470,48 +466,65 @@ func (s *Scanner) prepareMetaFiles(baseName string, r *ScrapeResult, cfg *Config
 		}
 	}
 
-	// 7. 写 poster
+	// 6. 写 poster（同时设 r.Poster 为本地文件名，供 NFO 用）
 	if posterData != nil {
 		p := filepath.Join(tmpDir, "poster.jpg")
 		if err := os.WriteFile(p, posterData, 0644); err == nil {
 			files = append(files, LocalFile{LocalPath: p, RemoteName: "poster.jpg"})
+			r.Poster = "poster.jpg"
 		}
 	} else {
+		r.Poster = ""
 		helpers.AppLogger.Warnf("[AV元数据] poster 最终为 nil，未生成")
 	}
 
-	// 8. 写 fanart + thumb
+	// 7. 写 fanart + thumb（同时设 r.Fanart 为本地文件名）
 	if fanartData != nil {
 		p := filepath.Join(tmpDir, "fanart.jpg")
 		if err := os.WriteFile(p, fanartData, 0644); err == nil {
 			files = append(files, LocalFile{LocalPath: p, RemoteName: "fanart.jpg"})
+			r.Fanart = "fanart.jpg"
 		}
 		p2 := filepath.Join(tmpDir, "thumb.jpg")
 		if err := os.WriteFile(p2, fanartData, 0644); err == nil {
 			files = append(files, LocalFile{LocalPath: p2, RemoteName: "thumb.jpg"})
 		}
 	} else {
+		r.Fanart = ""
 		helpers.AppLogger.Warnf("[AV元数据] fanart 最终为 nil，未生成")
 	}
 
-	// 9. 剧照
+	// 8. 剧照（命名 fanartN.jpg，Emby 识别为额外背景图）
+	helpers.AppLogger.Infof("[AV元数据] PreviewImages 共 %d 张", len(r.PreviewImages))
+	successCount := 0
 	for i, url := range r.PreviewImages {
-		remoteName := fmt.Sprintf("extrafanart/scene-%02d.jpg", i+1)
-		localPath := filepath.Join(tmpDir, fmt.Sprintf("scene-%02d.jpg", i+1))
+		remoteName := fmt.Sprintf("extrafanart/fanart%d.jpg", i+1)
+		localPath := filepath.Join(tmpDir, fmt.Sprintf("fanart%d.jpg", i+1))
 		if err := helpers.DownloadFile(url, localPath, ""); err == nil {
 			files = append(files, LocalFile{LocalPath: localPath, RemoteName: remoteName})
+			successCount++
 		} else {
 			helpers.AppLogger.Warnf("[AV元数据] 下载剧照 %d 失败: %v", i+1, err)
 		}
 	}
+	if successCount > 0 {
+		helpers.AppLogger.Infof("[AV元数据] 剧照下载完成: %d/%d", successCount, len(r.PreviewImages))
+	}
 
-	// 10. 预告片
+	// 9. 预告片
 	if r.Trailer != "" {
 		p := filepath.Join(tmpDir, "trailer.strm")
 		if err := os.WriteFile(p, []byte(r.Trailer), 0644); err == nil {
 			files = append(files, LocalFile{LocalPath: p, RemoteName: "trailers/trailer.strm"})
 		}
 	}
+
+	// 10. NFO —— 放最后，r.Poster/r.Fanart 已经设成本地文件名
+	nfoPath := filepath.Join(tmpDir, baseName+".nfo")
+	if err := os.WriteFile(nfoPath, []byte(GenerateNFO(r)), 0644); err != nil {
+		return nil, fmt.Errorf("写 NFO 失败: %w", err)
+	}
+	files = append(files, LocalFile{LocalPath: nfoPath, RemoteName: baseName + ".nfo"})
 
 	return files, nil
 }
