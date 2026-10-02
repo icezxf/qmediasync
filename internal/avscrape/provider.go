@@ -43,6 +43,11 @@ type ScrapeResult struct {
 	Oshash   string `json:"oshash"`
 	FileSize int64  `json:"file_size"`
 
+	// ProviderID MetaTube 专用的 provider/id，用于调 Detail
+	// 例：JAV321/midv00192（不是 JAV321/MIDV-192）
+	// json:"-" 让它不进 DB 也不进 NFO
+	ProviderID string `json:"-"`
+
 	ImageCandidates []string `json:"-"`
 }
 
