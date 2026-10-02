@@ -28,7 +28,7 @@ var videoExts = map[string]bool{
 // cdPartRegex 匹配多碟后缀：cd1/cd2/part1/disc1/disk1
 var cdPartRegex = regexp.MustCompile(`(?i)([-_]?(cd|part|disc|disk)\d+)`)
 
-// maleActorBlacklist 常用男优黑名单，命中则从演员表移除
+// maleActorBlacklist 常用男优黑名单
 var maleActorBlacklist = map[string]bool{
 	"清水健":              true,
 	"森林原人":             true,
@@ -64,10 +64,6 @@ type groupItem struct {
 
 // ============================================================
 // Scan 主流程
-// 1. 遍历目录找所有视频
-// 2. 按番号分组（cd1/cd2 归为一组）
-// 3. 每组：每次重新刮削 + 探测 + 移动 + 元数据 + 清理
-// 注意：不做 DB 复用，每次扫描都重新调 JavStash/MetaTube 拿最新数据
 // ============================================================
 func (s *Scanner) Scan(pathID uint) error {
 	var path models.AVPath
@@ -95,7 +91,6 @@ func (s *Scanner) Scan(pathID uint) error {
 	}
 	helpers.AppLogger.Infof("[AV扫描] 目录 %s 共找到 %d 个视频文件", path.SourcePath, len(videoFiles))
 
-	// 按番号分组（多碟）
 	groups := make(map[string]*groupItem)
 	var order []string
 	for _, fullPath := range videoFiles {
@@ -113,14 +108,13 @@ func (s *Scanner) Scan(pathID uint) error {
 		groups[code].Files = append(groups[code].Files, fullPath)
 	}
 
-	// 逐组处理
 	for _, code := range order {
 		g := groups[code]
 		primaryFile := g.Files[0]
 		helpers.AppLogger.Infof("[AV扫描] 番号 %s 共 %d 个文件，主文件: %s",
 			code, len(g.Files), filepath.Base(primaryFile))
 
-		// ===== 每次都重新刮削，拿最新数据 =====
+		// 每次都重新刮削
 		r, err := s.Svc.Scrape(code, "")
 		if err != nil {
 			s.recordTask(code, primaryFile, "failed", err.Error(), "")
@@ -128,13 +122,8 @@ func (s *Scanner) Scan(pathID uint) error {
 		}
 		result := r
 
-		// 过滤男优
 		result.Actors = filterFemaleActors(result.Actors)
-
-		// 多演员加共演
 		applyEnsembleTag(result)
-
-		// ffprobe + 附加标签
 		s.detectVideoMeta(fs, primaryFile, result, cfg)
 
 		if path.Mode == "scrape_only" {
@@ -195,9 +184,9 @@ func filterFemaleActors(actors []Actor) []Actor {
 
 // ============================================================
 // applyEnsembleTag 多演员（>=2）时：
-//   - Genres 加 "共演"（去重）
+//   - Genres 加 "共演"
 //   - Series 加 "共演"
-//   - NFO 里会额外加 <set><name>共演</name></set> 合集
+//   - NFO 里加 <set><name>共演</name></set>
 // ============================================================
 func applyEnsembleTag(r *ScrapeResult) {
 	if r == nil || len(r.Actors) < 2 {
@@ -266,8 +255,6 @@ func resolutionSuffix(res string) string {
 
 // ============================================================
 // organize 移动所有 CD 文件到目标目录 + 元数据入上传队列
-// 文件名规则：{code}{-分辨率}{-cdN}{ext}
-// 例：SSNI-658-cd1.mp4 → SSNI-658-4K-cd1.mp4
 // ============================================================
 func (s *Scanner) organize(fs FileSystem, path *models.AVPath, media *models.AVMedia, videoPaths []string, r *ScrapeResult, cfg *Config) error {
 	relDir := renderTemplate(path.NameTemplate, media)
@@ -290,7 +277,6 @@ func (s *Scanner) organize(fs FileSystem, path *models.AVPath, media *models.AVM
 		ext := filepath.Ext(originalName)
 		baseName := strings.TrimSuffix(originalName, ext)
 
-		// 提取 cdN 后缀
 		cdSuffix := ""
 		if m := cdPartRegex.FindString(baseName); m != "" {
 			cdSuffix = strings.ToLower(m)
@@ -340,18 +326,7 @@ func (s *Scanner) organize(fs FileSystem, path *models.AVPath, media *models.AVM
 
 // ============================================================
 // prepareMetaFiles 生成元数据
-// 图片策略：
-//   - poster（竖版）：ImageCandidates 竖图 > DMM（仅竖版 ps.jpg）> fanart 裁剪
-//   - fanart（横版）：ImageCandidates 横图
-//   - thumb = fanart 副本
-// ============================================================
-// ============================================================
-// prepareMetaFiles 生成元数据
-// 图片策略：
-//   - poster（竖版）：ImageCandidates 竖图 > DMM（仅竖版 ps.jpg）> fanart 裁剪
-//   - fanart（横版）：ImageCandidates 横图 > 强制裁 16:9
-//   - thumb = fanart 副本
-// 顺序：NFO 放最后（此时 r.Poster/r.Fanart 已经设成本地文件名）
+// poster 优先级：ImageCandidates 竖图 > fanart 右裁 > DMM pl.jpg 左裁
 // ============================================================
 func (s *Scanner) prepareMetaFiles(baseName string, r *ScrapeResult, cfg *Config) ([]LocalFile, error) {
 	if r == nil {
@@ -419,28 +394,21 @@ func (s *Scanner) prepareMetaFiles(baseName string, r *ScrapeResult, cfg *Config
 	}
 
 	if posterData == nil {
-		helpers.AppLogger.Warnf("[AV元数据] ImageCandidates 里没有竖版图，将走 DMM 兜底")
+		helpers.AppLogger.Warnf("[AV元数据] ImageCandidates 里没有竖版图，将走 fanart 裁剪兜底")
 	}
 
-	// 3. poster 兜底 1：DMM jp.jpg（大竖图 1000x1500+）
-	if posterData == nil {
-		if dmmURL := dmmPosterURL(r.Code); dmmURL != "" {
-			if data, err := downloadDMMImage(dmmURL); err == nil {
-				if imgCfg, _, decErr := image.DecodeConfig(bytes.NewReader(data)); decErr == nil {
-					if imgCfg.Height > imgCfg.Width {
-						posterData = data
-						helpers.AppLogger.Infof("[AV元数据] poster 使用 DMM jp.jpg（%dx%d）", imgCfg.Width, imgCfg.Height)
-					} else {
-						helpers.AppLogger.Infof("[AV元数据] DMM jp.jpg 是横版 %dx%d，跳过", imgCfg.Width, imgCfg.Height)
-					}
-				}
-			} else {
-				helpers.AppLogger.Warnf("[AV元数据] DMM jp.jpg 下载失败: %v", err)
-			}
+	// ===== 优先级：fanart 右裁 排在 DMM pl.jpg 左裁 前面 =====
+	// 3. poster 兜底 1：从 fanart 右侧裁
+	if posterData == nil && fanartData != nil {
+		if cropped, ok := cropPosterFromFanart(fanartData); ok {
+			posterData = cropped
+			helpers.AppLogger.Infof("[AV元数据] poster 从 fanart 右侧裁剪")
+		} else {
+			helpers.AppLogger.Warnf("[AV元数据] fanart 裁剪 poster 失败")
 		}
 	}
 
-	// 4. poster 兜底 2：DMM pl.jpg 左侧裁（pl.jpg 左边是竖版封面）
+	// 4. poster 兜底 2：DMM pl.jpg 左侧裁
 	if posterData == nil {
 		if plURL := dmmPlURL(r.Code); plURL != "" {
 			if data, err := downloadDMMImage(plURL); err == nil {
@@ -453,25 +421,16 @@ func (s *Scanner) prepareMetaFiles(baseName string, r *ScrapeResult, cfg *Config
 			}
 		}
 	}
+	// ==========================================================
 
-	// 5. poster 兜底 3：从 fanart 裁剪
-	if posterData == nil && fanartData != nil {
-		if cropped, ok := cropPosterFromFanart(fanartData); ok {
-			posterData = cropped
-			helpers.AppLogger.Infof("[AV元数据] poster 从 fanart 裁剪")
-		} else {
-			helpers.AppLogger.Warnf("[AV元数据] fanart 裁剪 poster 失败")
-		}
-	}
-
-	// 6. poster 太小就放大到 800x1200
+	// 5. poster 太小就放大到 500x750
 	if posterData != nil {
-		if resized, ok := resizePosterToMin(posterData, 800, 1200); ok {
+		if resized, ok := resizePosterToMin(posterData, 500, 750); ok {
 			posterData = resized
 		}
 	}
 
-	// 7. 打水印
+	// 6. 打水印
 	if posterData != nil && len(watermarks) > 0 {
 		if wm, err := applyWatermark(posterData, watermarks); err == nil {
 			posterData = wm
@@ -485,7 +444,7 @@ func (s *Scanner) prepareMetaFiles(baseName string, r *ScrapeResult, cfg *Config
 		}
 	}
 
-	// 8. 写 poster
+	// 7. 写 poster
 	if posterData != nil {
 		p := filepath.Join(tmpDir, "poster.jpg")
 		if err := os.WriteFile(p, posterData, 0644); err == nil {
@@ -497,7 +456,7 @@ func (s *Scanner) prepareMetaFiles(baseName string, r *ScrapeResult, cfg *Config
 		helpers.AppLogger.Warnf("[AV元数据] poster 最终为 nil，未生成")
 	}
 
-	// 9. 写 fanart + thumb
+	// 8. 写 fanart + thumb
 	if fanartData != nil {
 		p := filepath.Join(tmpDir, "fanart.jpg")
 		if err := os.WriteFile(p, fanartData, 0644); err == nil {
@@ -513,7 +472,7 @@ func (s *Scanner) prepareMetaFiles(baseName string, r *ScrapeResult, cfg *Config
 		helpers.AppLogger.Warnf("[AV元数据] fanart 最终为 nil，未生成")
 	}
 
-	// 10. 剧照
+	// 9. 剧照
 	helpers.AppLogger.Infof("[AV元数据] PreviewImages 共 %d 张", len(r.PreviewImages))
 	successCount := 0
 	for i, url := range r.PreviewImages {
@@ -530,7 +489,7 @@ func (s *Scanner) prepareMetaFiles(baseName string, r *ScrapeResult, cfg *Config
 		helpers.AppLogger.Infof("[AV元数据] 剧照下载完成: %d/%d", successCount, len(r.PreviewImages))
 	}
 
-	// 11. 预告片
+	// 10. 预告片
 	if r.Trailer != "" {
 		p := filepath.Join(tmpDir, "trailer.strm")
 		if err := os.WriteFile(p, []byte(r.Trailer), 0644); err == nil {
@@ -538,7 +497,7 @@ func (s *Scanner) prepareMetaFiles(baseName string, r *ScrapeResult, cfg *Config
 		}
 	}
 
-	// 12. NFO —— 放最后，r.Poster/r.Fanart 已经设成本地文件名
+	// 11. NFO
 	nfoPath := filepath.Join(tmpDir, baseName+".nfo")
 	if err := os.WriteFile(nfoPath, []byte(GenerateNFO(r)), 0644); err != nil {
 		return nil, fmt.Errorf("写 NFO 失败: %w", err)
@@ -591,12 +550,6 @@ func walkVideos(fs FileSystem, root string, depth int) ([]string, error) {
 
 // ============================================================
 // renderTemplate
-// {actor} 智能合并：
-//   - 0 位：未知演员
-//   - 1 位：演员A
-//   - 2-3 位：演员A,演员B(,演员C)
-//   - >3 位：多人作品
-// {actors} 全部演员逗号分隔（不折叠）
 // ============================================================
 func renderTemplate(tpl string, media *models.AVMedia) string {
 	if tpl == "" {
@@ -655,7 +608,6 @@ func renderTemplate(tpl string, media *models.AVMedia) string {
 	return strings.Join(cleaned, "/")
 }
 
-// pickBestActorName 优先用 a.Name（Scrape 阶段维基百科已翻成中文名）
 func pickBestActorName(a Actor) string {
 	if a.Name != "" {
 		return a.Name
