@@ -409,6 +409,7 @@ func (s *Scanner) prepareMetaFiles(baseName string, r *ScrapeResult, cfg *Config
 		}
 		if fanartData == nil && imgCfg.Height < imgCfg.Width {
 			fanartData = data
+			r.Fanart = url
 			helpers.AppLogger.Infof("[AV元数据]   → 作为 fanart")
 		}
 		if posterData != nil && fanartData != nil {
@@ -420,29 +421,40 @@ func (s *Scanner) prepareMetaFiles(baseName string, r *ScrapeResult, cfg *Config
 	if posterData == nil {
 		helpers.AppLogger.Warnf("[AV元数据] ImageCandidates 里没有竖版图，将走 DMM 兜底")
 	}
-	if fanartData == nil {
-		helpers.AppLogger.Warnf("[AV元数据] ImageCandidates 里没有横版图，fanart 将缺失")
-	}
 
-	// 3. poster 兜底 1：DMM（仅接受竖版）
+	// 3. poster 兜底 1：DMM jp.jpg（大竖图 1000x1500+）
 	if posterData == nil {
 		if dmmURL := dmmPosterURL(r.Code); dmmURL != "" {
 			if data, err := downloadDMMImage(dmmURL); err == nil {
 				if imgCfg, _, decErr := image.DecodeConfig(bytes.NewReader(data)); decErr == nil {
 					if imgCfg.Height > imgCfg.Width {
 						posterData = data
-						helpers.AppLogger.Infof("[AV元数据] poster 使用 DMM（竖版 %dx%d）", imgCfg.Width, imgCfg.Height)
+						helpers.AppLogger.Infof("[AV元数据] poster 使用 DMM jp.jpg（%dx%d）", imgCfg.Width, imgCfg.Height)
 					} else {
-						helpers.AppLogger.Infof("[AV元数据] DMM 图是横版 %dx%d，跳过，留给 fanart 裁剪兜底", imgCfg.Width, imgCfg.Height)
+						helpers.AppLogger.Infof("[AV元数据] DMM jp.jpg 是横版 %dx%d，跳过", imgCfg.Width, imgCfg.Height)
 					}
 				}
 			} else {
-				helpers.AppLogger.Warnf("[AV元数据] DMM 下载失败: %v", err)
+				helpers.AppLogger.Warnf("[AV元数据] DMM jp.jpg 下载失败: %v", err)
 			}
 		}
 	}
 
-	// 4. poster 兜底 2：从 fanart 裁剪
+	// 4. poster 兜底 2：DMM pl.jpg 左侧裁（pl.jpg 左边是竖版封面）
+	if posterData == nil {
+		if plURL := dmmPlURL(r.Code); plURL != "" {
+			if data, err := downloadDMMImage(plURL); err == nil {
+				if cropped, ok := cropPosterFromDMM(data); ok {
+					posterData = cropped
+					helpers.AppLogger.Infof("[AV元数据] poster 使用 DMM pl.jpg 左侧裁剪")
+				}
+			} else {
+				helpers.AppLogger.Warnf("[AV元数据] DMM pl.jpg 下载失败: %v", err)
+			}
+		}
+	}
+
+	// 5. poster 兜底 3：从 fanart 裁剪
 	if posterData == nil && fanartData != nil {
 		if cropped, ok := cropPosterFromFanart(fanartData); ok {
 			posterData = cropped
@@ -452,7 +464,14 @@ func (s *Scanner) prepareMetaFiles(baseName string, r *ScrapeResult, cfg *Config
 		}
 	}
 
-	// 5. 打水印
+	// 6. poster 太小就放大到 800x1200
+	if posterData != nil {
+		if resized, ok := resizePosterToMin(posterData, 800, 1200); ok {
+			posterData = resized
+		}
+	}
+
+	// 7. 打水印
 	if posterData != nil && len(watermarks) > 0 {
 		if wm, err := applyWatermark(posterData, watermarks); err == nil {
 			posterData = wm
@@ -466,7 +485,7 @@ func (s *Scanner) prepareMetaFiles(baseName string, r *ScrapeResult, cfg *Config
 		}
 	}
 
-	// 6. 写 poster（同时设 r.Poster 为本地文件名，供 NFO 用）
+	// 8. 写 poster
 	if posterData != nil {
 		p := filepath.Join(tmpDir, "poster.jpg")
 		if err := os.WriteFile(p, posterData, 0644); err == nil {
@@ -478,7 +497,7 @@ func (s *Scanner) prepareMetaFiles(baseName string, r *ScrapeResult, cfg *Config
 		helpers.AppLogger.Warnf("[AV元数据] poster 最终为 nil，未生成")
 	}
 
-	// 7. 写 fanart + thumb（同时设 r.Fanart 为本地文件名）
+	// 9. 写 fanart + thumb
 	if fanartData != nil {
 		p := filepath.Join(tmpDir, "fanart.jpg")
 		if err := os.WriteFile(p, fanartData, 0644); err == nil {
@@ -494,7 +513,7 @@ func (s *Scanner) prepareMetaFiles(baseName string, r *ScrapeResult, cfg *Config
 		helpers.AppLogger.Warnf("[AV元数据] fanart 最终为 nil，未生成")
 	}
 
-	// 8. 剧照（命名 fanartN.jpg，Emby 识别为额外背景图）
+	// 10. 剧照
 	helpers.AppLogger.Infof("[AV元数据] PreviewImages 共 %d 张", len(r.PreviewImages))
 	successCount := 0
 	for i, url := range r.PreviewImages {
@@ -511,7 +530,7 @@ func (s *Scanner) prepareMetaFiles(baseName string, r *ScrapeResult, cfg *Config
 		helpers.AppLogger.Infof("[AV元数据] 剧照下载完成: %d/%d", successCount, len(r.PreviewImages))
 	}
 
-	// 9. 预告片
+	// 11. 预告片
 	if r.Trailer != "" {
 		p := filepath.Join(tmpDir, "trailer.strm")
 		if err := os.WriteFile(p, []byte(r.Trailer), 0644); err == nil {
@@ -519,7 +538,7 @@ func (s *Scanner) prepareMetaFiles(baseName string, r *ScrapeResult, cfg *Config
 		}
 	}
 
-	// 10. NFO —— 放最后，r.Poster/r.Fanart 已经设成本地文件名
+	// 12. NFO —— 放最后，r.Poster/r.Fanart 已经设成本地文件名
 	nfoPath := filepath.Join(tmpDir, baseName+".nfo")
 	if err := os.WriteFile(nfoPath, []byte(GenerateNFO(r)), 0644); err != nil {
 		return nil, fmt.Errorf("写 NFO 失败: %w", err)
