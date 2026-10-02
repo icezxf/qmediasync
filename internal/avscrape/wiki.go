@@ -31,7 +31,6 @@ func NewWikiClient() *WikiClient {
 	}
 }
 
-// GetChineseName 查询维基百科的日中跨语言链接
 func (w *WikiClient) GetChineseName(japaneseName string) (string, error) {
 	if japaneseName == "" {
 		return "", nil
@@ -105,10 +104,22 @@ func (w *WikiClient) GetChineseName(japaneseName string) (string, error) {
 }
 
 // TranslateActorNames 批量查询演员中文名
-// 无条件走 wiki：日文名会查到中文名，已是中文的名字查不到会保持原样
+// 关键：翻译成功后把原始日文名加入 aliases，供后续翻译占位符使用
 func (w *WikiClient) TranslateActorNames(actors []Actor) []Actor {
 	for i := range actors {
-		if zh, err := w.GetChineseName(actors[i].Name); err == nil && zh != "" {
+		oldName := actors[i].Name
+		if zh, err := w.GetChineseName(oldName); err == nil && zh != "" && zh != oldName {
+			// 把原始日文名加进 aliases
+			exists := false
+			for _, a := range actors[i].Aliases {
+				if a == oldName {
+					exists = true
+					break
+				}
+			}
+			if !exists {
+				actors[i].Aliases = append(actors[i].Aliases, oldName)
+			}
 			actors[i].Name = zh
 		}
 	}
