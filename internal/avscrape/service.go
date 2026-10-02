@@ -37,27 +37,36 @@ func (s *Service) Scrape(code string, oshash string) (*ScrapeResult, error) {
 		}
 	}
 
-	// MetaTube
+	// ===== MetaTube（用 ProviderID 拉详情） =====
 	if cfg.EnableMetaTube && cfg.MetaTubeServer != "" {
 		mt := NewMetaTubeClient(cfg.MetaTubeServer)
 		hits, err := mt.Search(code)
 		if err == nil {
 			for _, h := range hits {
-				providerID := extractProviderID(h.Source, h.Code)
+				// 优先用 Search 里存好的 ProviderID（provider/id）
+				providerID := h.ProviderID
+				if providerID == "" {
+					providerID = extractProviderID(h.Source, h.Code)
+				}
 				if providerID == "" {
 					continue
 				}
 				detail, err := mt.Detail(code, providerID)
 				if err == nil {
+					helpers.AppLogger.Infof("[MetaTube] 详情成功: %s => %d 张剧照",
+						providerID, len(detail.PreviewImages))
 					allResults = append(allResults, detail)
 				} else {
+					helpers.AppLogger.Warnf("[MetaTube] 详情失败: %s => %v", providerID, err)
 					allResults = append(allResults, h)
 				}
 			}
+		} else {
+			helpers.AppLogger.Warnf("[MetaTube] 搜索失败: %v", err)
 		}
 	}
 
-	// JavStash 番号搜索
+	// ===== JavStash 番号搜索 =====
 	if cfg.EnableJavStash {
 		js := NewJavStashClient(cfg.JavStashEndpoint, cfg.JavStashAPIKey)
 		hits, err := js.Search(code)
@@ -307,7 +316,6 @@ func mergeResults(results []*ScrapeResult, cfg *Config) *ScrapeResult {
 		}
 	}
 
-	// 多演员（>=2）加"共演"标签
 	if len(best.Actors) >= 2 {
 		hasEnsemble := false
 		for _, g := range best.Genres {
