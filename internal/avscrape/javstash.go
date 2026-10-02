@@ -124,9 +124,14 @@ func (j *JavStashClient) Search(code string) ([]*ScrapeResult, error) {
 		}
 		if len(item.Images) > 0 {
 			r.Fanart = item.Images[0].URL
+			// 剩余的图作为剧照
+			if len(item.Images) > 1 {
+				for _, img := range item.Images[1:] {
+					r.PreviewImages = append(r.PreviewImages, img.URL)
+				}
+			}
 		}
 		for _, p := range item.Performers {
-			// 保留主名字，aliases 全部存进 Actor.Aliases 供后续归一化和交叉匹配
 			a := Actor{
 				Name:    p.Performer.Name,
 				Aliases: p.Performer.Aliases,
@@ -252,6 +257,11 @@ func (j *JavStashClient) SearchByOshash(oshash string) (*ScrapeResult, error) {
 	}
 	if len(item.Images) > 0 {
 		r.Fanart = item.Images[0].URL
+		if len(item.Images) > 1 {
+			for _, img := range item.Images[1:] {
+				r.PreviewImages = append(r.PreviewImages, img.URL)
+			}
+		}
 	}
 	for _, p := range item.Performers {
 		a := Actor{
