@@ -176,11 +176,12 @@ func (t *Translator) geminiTranslateAll(r *ScrapeResult) error {
 	prompt := fmt.Sprintf(`你是一个日文影视元数据翻译助手。请把下面 JSON 中的所有日文内容翻译成简体中文。
 
 规则：
-1. 演员名必须翻译为该演员公认的中文译名（如 "新ありな" → "新有菜"，"上乃木まな" → "上乃木真菜"）。如果不确定，就保留日文原名，不要音译。
-2. 标题翻译要自然通顺，保留原意，不要机翻腔。
-3. 剧情简介要完整翻译，不要省略、不要概括。
-4. 标签（genres）要翻译成中文习惯用语，如 "スレンダー" → "苗条"，"淫乱・ハード系" → "淫乱·硬核系"。
-5. 只返回 JSON，不要加任何解释、不要加 markdown 代码块标记。
+1. 如果文本中出现 __ACTOR_数字__ 这样的标记（例如 __ACTOR_0__），必须原样保留，不要翻译、不要修改、不要加空格。
+2. 演员名必须翻译为该演员公认的中文译名（如 "新ありな" → "新有菜"）。如果不确定，就保留日文原名，不要音译。
+3. 标题翻译要自然通顺，保留原意，不要机翻腔。
+4. 剧情简介要完整翻译，不要省略、不要概括。
+5. 标签（genres）要翻译成中文习惯用语。
+6. 只返回 JSON，不要加任何解释、不要加 markdown 代码块标记。
 
 输入 JSON：
 %s
@@ -238,6 +239,7 @@ func (t *Translator) geminiTranslateAll(r *ScrapeResult) error {
 
 // ============================================================
 // TranslateResult 统一入口
+// 用占位符保护演员名，防止机翻把演员名翻错
 // ============================================================
 
 func (t *Translator) TranslateResult(r *ScrapeResult) {
@@ -245,15 +247,56 @@ func (t *Translator) TranslateResult(r *ScrapeResult) {
 		return
 	}
 
-	skipActors := false
+	// ===== 1. 用占位符保护标题/简介中的演员名 =====
+	type actorPh struct {
+		ph          string
+		chineseName string
+	}
+	var phs []actorPh
 
+	for i, a := range r.Actors {
+		if a.Name == "" {
+			continue
+		}
+		ph := fmt.Sprintf("__ACTOR_%d__", i)
+		phs = append(phs, actorPh{ph: ph, chineseName: a.Name})
+
+		// 把所有变体（含 aliases 和 主名）替换成占位符
+		variants := append([]string{}, a.Aliases...)
+		variants = append(variants, a.Name)
+		for _, v := range variants {
+			if v == "" {
+				continue
+			}
+			if strings.Contains(r.Title, v) {
+				r.Title = strings.ReplaceAll(r.Title, v, ph)
+			}
+			if strings.Contains(r.Plot, v) {
+				r.Plot = strings.ReplaceAll(r.Plot, v, ph)
+			}
+		}
+	}
+
+	// 还原函数
+	restore := func() {
+		for _, p := range phs {
+			r.Title = strings.ReplaceAll(r.Title, p.ph, p.chineseName)
+			r.Plot = strings.ReplaceAll(r.Plot, p.ph, p.chineseName)
+		}
+	}
+
+	if len(phs) > 0 {
+		helpers.AppLogger.Infof("[翻译] 已用 %d 个占位符保护演员名", len(phs))
+	}
+
+	// ===== 2. 走翻译流程 =====
 	if t.Engine == "gemini" {
 		if err := t.geminiTranslateAll(r); err == nil {
+			restore()
 			return
 		} else {
 			helpers.AppLogger.Warnf("[翻译] Gemini 失败，降级到 DeepL: %v", err)
 			t.Engine = "deepl"
-			skipActors = true
 		}
 	}
 
@@ -271,18 +314,11 @@ func (t *Translator) TranslateResult(r *ScrapeResult) {
 		}
 	}
 
-	if !skipActors {
-		for i := range r.Actors {
-			// 严格判断：只有真正的纯中文名才跳过翻译
-			if !isChineseName(r.Actors[i].Name) {
-				if s, err := t.Translate(r.Actors[i].Name); err == nil && s != "" && s != r.Actors[i].Name {
-					r.Actors[i].Name = s
-				}
-			}
-		}
-	} else {
-		helpers.AppLogger.Infof("[翻译] 降级模式：跳过演员名翻译，保留原文")
-	}
+	// 演员名不翻：wiki 阶段已经翻好了，机翻容易翻错
+	helpers.AppLogger.Infof("[翻译] 演员名保留 wiki 中文名，跳过机翻")
+
+	// ===== 3. 还原占位符 =====
+	restore()
 }
 
 // ============================================================
